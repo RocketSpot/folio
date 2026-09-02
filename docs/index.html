@@ -423,7 +423,7 @@ const U = F.util = {};
 F.C = {
   APP: 'Folio',
   VERSION: '0.1.0',
-  BUILD: '9159d3b6',
+  BUILD: 'aa256a35',
   SITE: 'site' === 'site',
   CDN: {
     PDFJS: 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js',
@@ -2780,44 +2780,91 @@ async function synthGoogle(def, persona){
 }
 
 // ---------- Kokoro (on-device) ----------
-const kokoro = { tts: null, loading: null, progress: 0, device: null, dtype: null, error: null, mem: new Map(), lastEmit: 0 };
+// The model runs in a dedicated Web Worker so generation never freezes the reader; if workers or module imports are
+// unavailable the engine falls back to the main thread.
+const kokoro = { engine: null, loading: null, progress: 0, device: null, dtype: null, error: null, mem: new Map(), lastEmit: 0, voices: [] };
 function kokoroSupported(){ return typeof WebAssembly !== 'undefined' && typeof AudioContext !== 'undefined'; }
-X.kokoroStatus = () => ({ supported: kokoroSupported(), loaded: !!kokoro.tts, loading: !!kokoro.loading && !kokoro.tts, progress: kokoro.progress, device: kokoro.device, dtype: kokoro.dtype, error: kokoro.error ? (kokoro.error.message || String(kokoro.error)) : null, gpuAvailable: !!navigator.gpu });
+X.kokoroStatus = () => ({ supported: kokoroSupported(), loaded: !!kokoro.engine, loading: !!kokoro.loading && !kokoro.engine, progress: kokoro.progress, device: kokoro.device, dtype: kokoro.dtype, error: kokoro.error ? (kokoro.error.message || String(kokoro.error)) : null, gpuAvailable: !!navigator.gpu, inWorker: !!(kokoro.engine && kokoro.engine.worker) });
+
+const KOKORO_WORKER_SRC = `
+let tts = null;
+self.onmessage = async (e) => {
+  const m = e.data;
+  try {
+    if (m.type === 'load') {
+      const mod = await import(m.lib);
+      tts = await mod.KokoroTTS.from_pretrained(m.model, { dtype: m.dtype, device: m.device, progress_callback: p => { if (p && p.file) self.postMessage({ type: 'progress', file: p.file, status: p.status, loaded: p.loaded, total: p.total }); } });
+      self.postMessage({ type: 'loaded', voices: Object.keys(tts.voices || {}) });
+    } else if (m.type === 'generate') {
+      const audio = await tts.generate(m.text, { voice: m.voice, speed: m.speed });
+      const data = audio.audio || audio.data || audio;
+      const buf = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
+      self.postMessage({ type: 'result', id: m.id, sampleRate: audio.sampling_rate || 24000, buffer: buf }, [buf]);
+    }
+  } catch (err) { self.postMessage({ type: 'error', id: m.id || null, phase: m.type, message: (err && err.message) || String(err) }); }
+};`;
+
+function trackProgress(files, p, onProgress){
+  if (!p || !p.file) return;
+  if (p.status === 'progress' || p.status === 'done') files[p.file] = { loaded: p.status === 'done' ? (p.total || (files[p.file] && files[p.file].total) || 0) : (p.loaded || 0), total: p.total || (files[p.file] && files[p.file].total) || 0 };
+  const tot = Object.values(files).reduce((a, f) => a + f.total, 0), got = Object.values(files).reduce((a, f) => a + Math.min(f.loaded, f.total || f.loaded), 0);
+  kokoro.progress = tot ? got / tot : 0;
+  const now = Date.now();
+  if (now - kokoro.lastEmit > 250) { kokoro.lastEmit = now; onProgress && onProgress(kokoro.progress, got, tot); F.bus.emit('kokoro-progress', { progress: kokoro.progress, loaded: got, total: tot }); }
+}
+
+/** Worker-backed engine: { generate(text, voice, speed) -> {data, sampleRate}, worker } */
+function workerEngine(device, dtype, onProgress){
+  return new Promise((resolve, reject) => {
+    let worker;
+    try { worker = new Worker(URL.createObjectURL(new Blob([KOKORO_WORKER_SRC], { type: 'text/javascript' })), { type: 'module' }); }
+    catch (e) { return reject(e); }
+    const files = {};
+    const pending = new Map();
+    let nextId = 1, settled = false;
+    worker.onmessage = e => {
+      const m = e.data;
+      if (m.type === 'progress') return trackProgress(files, m, onProgress);
+      if (m.type === 'loaded') { settled = true; kokoro.voices = m.voices || []; return resolve({ worker, generate(text, voice, speed){ return new Promise((res, rej) => { const id = nextId++; pending.set(id, { res, rej }); worker.postMessage({ type: 'generate', id, text, voice, speed }); }); } }); }
+      if (m.type === 'result') { const p = pending.get(m.id); if (p) { pending.delete(m.id); p.res({ data: new Float32Array(m.buffer), sampleRate: m.sampleRate }); } return; }
+      if (m.type === 'error') { if (!settled) { settled = true; worker.terminate(); return reject(new Error(m.message)); } const p = pending.get(m.id); if (p) { pending.delete(m.id); p.rej(new Error(m.message)); } }
+    };
+    worker.onerror = e => { if (!settled) { settled = true; reject(new Error(e.message || 'Voice worker failed')); } };
+    worker.postMessage({ type: 'load', lib: C.CDN.KOKORO, model: C.KOKORO_MODEL, device, dtype });
+  });
+}
+/** Main-thread engine (fallback when workers cannot be used). */
+async function mainEngine(device, dtype, onProgress){
+  const mod = await import(C.CDN.KOKORO);
+  const files = {};
+  const tts = await mod.KokoroTTS.from_pretrained(C.KOKORO_MODEL, { dtype, device, progress_callback: p => trackProgress(files, p, onProgress) });
+  kokoro.voices = Object.keys(tts.voices || {});
+  return { worker: null, async generate(text, voice, speed){ const audio = await tts.generate(text, { voice, speed }); const data = audio.audio || audio.data || audio; return { data, sampleRate: audio.sampling_rate || 24000 }; } };
+}
 X.loadKokoro = (onProgress) => {
-  if (kokoro.tts) return Promise.resolve(kokoro.tts);
+  if (kokoro.engine) return Promise.resolve(kokoro.engine);
   if (kokoro.loading) return kokoro.loading;
   kokoro.error = null;
   kokoro.loading = (async () => {
-    const mod = await import(C.CDN.KOKORO);
     const pref = S.settings.get('kokoroDevice', 'auto');
     // navigator.gpu can exist without a usable adapter (headless browsers, blocked drivers): probe before committing to the GPU build.
     let gpuOk = false;
     if (pref !== 'cpu' && navigator.gpu) { try { gpuOk = !!(await Promise.race([navigator.gpu.requestAdapter(), new Promise(r => setTimeout(() => r(null), 3000))])); } catch (e) { gpuOk = false; } }
     const wantGpu = pref === 'gpu' ? gpuOk : (pref === 'auto' && gpuOk);
-    const files = {};
-    const progress = p => {
-      if (!p || !p.file) return;
-      if (p.status === 'progress' || p.status === 'done') files[p.file] = { loaded: p.status === 'done' ? (p.total || files[p.file] && files[p.file].total || 0) : (p.loaded || 0), total: p.total || (files[p.file] && files[p.file].total) || 0 };
-      const tot = Object.values(files).reduce((a, f) => a + f.total, 0), got = Object.values(files).reduce((a, f) => a + Math.min(f.loaded, f.total || f.loaded), 0);
-      kokoro.progress = tot ? got / tot : 0;
-      const now = Date.now();
-      if (now - kokoro.lastEmit > 250) { kokoro.lastEmit = now; onProgress && onProgress(kokoro.progress, got, tot); F.bus.emit('kokoro-progress', { progress: kokoro.progress, loaded: got, total: tot }); }
-    };
-    const attempt = async (device, dtype) => {
-      const tts = await mod.KokoroTTS.from_pretrained(C.KOKORO_MODEL, { dtype, device, progress_callback: progress });
-      kokoro.device = device; kokoro.dtype = dtype;
-      return tts;
-    };
-    try {
-      kokoro.tts = wantGpu ? await attempt('webgpu', 'fp32') : await attempt('wasm', 'q8');
-    } catch (e) {
-      if (!wantGpu) throw e;
-      console.warn('[kokoro] WebGPU load failed, falling back to WASM', e);
-      kokoro.tts = await attempt('wasm', 'q8');
+    const plan = wantGpu ? [['webgpu', 'fp32'], ['wasm', 'q8']] : [['wasm', 'q8']];
+    let lastErr = null;
+    for (const [device, dtype] of plan) {
+      for (const make of [workerEngine, mainEngine]) {
+        try {
+          kokoro.engine = await make(device, dtype, onProgress);
+          kokoro.device = device; kokoro.dtype = dtype;
+          kokoro.progress = 1;
+          F.bus.emit('kokoro-progress', { progress: 1, done: true });
+          return kokoro.engine;
+        } catch (e) { lastErr = e; console.warn(`[kokoro] ${make.name} ${device}/${dtype} failed`, e && e.message); }
+      }
     }
-    kokoro.progress = 1;
-    F.bus.emit('kokoro-progress', { progress: 1, done: true });
-    return kokoro.tts;
+    throw lastErr || new Error('The on-device voice could not be loaded.');
   })().catch(e => { kokoro.loading = null; kokoro.error = e; throw e; });
   return kokoro.loading;
 };
@@ -2850,7 +2897,7 @@ function kokoroGroups(sentences){
   return out;
 }
 async function synthKokoro(def, persona){
-  const tts = await X.loadKokoro((p, got, tot) => setLoading(`Downloading voice model ${Math.round(p * 100)}%${tot ? ` · ${(got / 1e6).toFixed(0)} / ${(tot / 1e6).toFixed(0)} MB` : ''}`));
+  const engine = await X.loadKokoro((p, got, tot) => setLoading(`Downloading voice model ${Math.round(p * 100)}%${tot ? ` · ${(got / 1e6).toFixed(0)} / ${(tot / 1e6).toFixed(0)} MB` : ''}`));
   setLoading('Generating speech on this device…');
   const voice = S.settings.get('kokoroVoice:' + persona.id) || persona.kokoroVoice || 'af_heart';
   const speed = U.clamp(persona.kokoroSpeed || persona.rate || 1, 0.6, 1.4);
@@ -2861,9 +2908,8 @@ async function synthKokoro(def, persona){
   const gap = Math.round(0.24 * sr);
   const segments = [];
   for (const g of groups) {
-    const audio = await tts.generate(g.text, { voice, speed });
-    const data = audio.audio || audio.data || audio;
-    sr = audio.sampling_rate || sr;
+    const { data, sampleRate } = await engine.generate(g.text, voice, speed);
+    sr = sampleRate || sr;
     const start = total / sr;
     pieces.push(data); total += data.length;
     pieces.push(new Float32Array(gap)); total += gap;
@@ -2878,10 +2924,9 @@ async function synthKokoro(def, persona){
   return { blob: floatToWav(all, sr), chars: null, segments, duration: total / sr };
 }
 X.kokoroPreviewVoice = async (voiceId, text) => {
-  const tts = await X.loadKokoro();
-  const audio = await tts.generate(text || 'This is how I read. The evening was quiet, and the pages turned at their own pace.', { voice: voiceId, speed: 1 });
-  const data = audio.audio || audio.data || audio;
-  const blob = floatToWav(data, audio.sampling_rate || 24000);
+  const engine = await X.loadKokoro();
+  const { data, sampleRate } = await engine.generate(text || 'This is how I read. The evening was quiet, and the pages turned at their own pace.', voiceId, 1);
+  const blob = floatToWav(data, sampleRate || 24000);
   const a = new Audio(URL.createObjectURL(blob));
   await a.play();
   return a;
