@@ -1,11 +1,11 @@
-/* Folio service worker — build 12be3a06 (2026-09-02)
+/* Folio service worker — build b7d2da43 (2026-09-02)
  * Strategy:
  *   - app shell (this origin): navigations are network-first with cache fallback, other shell files cache-first
  *   - code libraries and fonts from CDNs: stale-while-revalidate in a shared runtime cache
  *   - catalog, download and speech APIs: never cached (network only)
  * Books, progress and settings live in IndexedDB and are never touched by the worker.
  */
-const VERSION = '12be3a06';
+const VERSION = 'b7d2da43';
 const SHELL = 'folio-shell-' + VERSION;
 const RUNTIME = 'folio-runtime-v1';
 const SHELL_URLS = ['./', './index.html', './manifest.webmanifest', './icons/icon.svg'];

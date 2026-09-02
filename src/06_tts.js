@@ -739,7 +739,17 @@ function rememberStored(list){ piper.stored = list || []; S.settings.set('piperS
 X.piperStoredCached = () => piper.stored || S.settings.get('piperStoredCache', []);
 X.piperCatalogCached = () => piper.catalog || ((S.settings.get('piperCatalog') || {}).list) || null;
 X.piperStored = async () => { const engine = await X.loadPiper(); return rememberStored(await engine.stored()); };
-X.piperDownload = async (voiceId) => { const engine = await X.loadPiper(); await engine.download(voiceId); delete piper.dl[voiceId]; rememberStored(await engine.stored().catch(() => piper.stored)); F.bus.emit('piper-voices', { downloaded: voiceId }); return piper.stored; };
+X.piperDownload = async (voiceId) => {
+  const engine = await X.loadPiper();
+  await engine.download(voiceId);
+  delete piper.dl[voiceId];
+  // the library does not await its file writes; give the private file system a moment before listing
+  let list = piper.stored || [];
+  for (let i = 0; i < 8; i++) { list = await engine.stored().catch(() => list); if (list.includes(voiceId)) break; await U.sleep(250); }
+  rememberStored(list);
+  F.bus.emit('piper-voices', { downloaded: voiceId });
+  return piper.stored;
+};
 X.piperRemove = async (voiceId) => { const engine = await X.loadPiper(); await engine.remove(voiceId); rememberStored(await engine.stored().catch(() => piper.stored)); F.bus.emit('piper-voices', { removed: voiceId }); return piper.stored; };
 X.piperVoiceLabel = (key) => { const c = X.piperCatalogCached(); const v = c && c.find(x => x.key === key); return v ? `${v.name} (${v.lang.replace('_', '-')}, ${v.quality})` : key; };
 function resolvePiperVoice(persona, lang){
