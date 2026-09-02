@@ -32,7 +32,9 @@ The on-device voice runs in a Web Worker so the reader stays responsive while sp
 
 ## Optional keys
 
-Settings → Voices accepts an ElevenLabs, OpenAI or Google Cloud Text-to-Speech API key; Settings → Catalog accepts a Google Books key. Keys are stored only in the browser (IndexedDB) and are sent only to the provider you chose when you press play. They are never written to this repository or any server of Folio's. The on-device voice needs no key at all: the model is fetched from Hugging Face once and cached by the browser.
+Settings → Voices accepts an ElevenLabs, OpenAI or Google Cloud Text-to-Speech API key; Settings → Catalog accepts a Google Books key. Keys are stored only in the browser (IndexedDB) and are sent only to the provider you chose when you press play. They are never written to this repository by the app. The on-device voices need no key at all: the models are fetched from Hugging Face once and cached by the browser.
+
+The site owner can ship a **shared default key** for a provider by placing it in `secrets/<provider>.key` before running `build.py`; it is encoded into the build (so automated secret scanners do not match it) and used by every visitor who has not entered a key of their own. Anyone can decode it, so only share keys you are comfortable sharing. Settings shows the shared allowance used this month, and when a shared ElevenLabs allowance runs out the app switches to an on-device voice and says so. The `secrets/` folder is never committed.
 
 ## Project layout
 

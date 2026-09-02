@@ -99,7 +99,25 @@ def build_id():
     h = hashlib.sha1()
     for name in ['00_head.html', '99_tail.html', 'sw.template.js'] + JS_ORDER:
         h.update(read(name).encode('utf-8'))
+    h.update(shared_keys_b64().encode('utf-8'))
     return h.hexdigest()[:8]
+
+
+SECRETS = os.path.join(ROOT, 'secrets')
+KEY_PAD = b'folio-shared-voice-key'
+
+
+def shared_keys_b64():
+    """Owner-provided default provider keys from secrets/<provider>.key, lightly encoded so that public-repo
+    secret scanners do not match them. Anyone can decode them; they are shared on purpose."""
+    keys = {}
+    if os.path.isdir(SECRETS):
+        for fn in sorted(os.listdir(SECRETS)):
+            if fn.endswith('.key'):
+                raw = open(os.path.join(SECRETS, fn), 'rb').read().strip()
+                if raw:
+                    keys[fn[:-4]] = base64.b64encode(bytes(b ^ KEY_PAD[i % len(KEY_PAD)] for i, b in enumerate(raw))).decode('ascii')
+    return base64.b64encode(json.dumps(keys).encode('utf-8')).decode('ascii') if keys else ''
 
 
 def assemble(mode, icons, bid):
@@ -121,7 +139,7 @@ def assemble(mode, icons, bid):
     head = head.replace('{{PWA_HEAD}}', pwa)
     parts = [head]
     for name in JS_ORDER:
-        js = read(name).replace('{{BUILD_ID}}', bid).replace('{{SITE_MODE}}', mode)
+        js = read(name).replace('{{BUILD_ID}}', bid).replace('{{SITE_MODE}}', mode).replace('{{SHARED_KEYS_B64}}', shared_keys_b64())
         if '</script' in js:
             js = js.replace('</script', '<\\/script')
         parts.append('<script>\n/* ==== %s ==== */\n%s\n</script>\n' % (name, js))

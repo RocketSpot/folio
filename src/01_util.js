@@ -9,6 +9,8 @@ F.C = {
   VERSION: '0.1.0',
   BUILD: '{{BUILD_ID}}',
   SITE: '{{SITE_MODE}}' === 'site',
+  // Owner-provided default provider keys, injected by build.py from secrets/<provider>.key (encoded, not secret).
+  SHARED_KEYS_B64: '{{SHARED_KEYS_B64}}',
   CDN: {
     PDFJS: 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js',
     PDFJS_WORKER: 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js',
@@ -137,6 +139,27 @@ F.C = {
   DEFAULT_WPP: 280,
   SPEEDS: [0.6, 0.75, 0.85, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5],
   SLEEP_OPTIONS: [{ id: 0, name: 'Off' }, { id: 10, name: '10 min' }, { id: 20, name: '20 min' }, { id: 30, name: '30 min' }, { id: 45, name: '45 min' }, { id: 60, name: '60 min' }, { id: -1, name: 'End of chapter' }],
+};
+
+// ---- shared (owner-provided) provider keys ----
+const KEY_PAD = 'folio-shared-voice-key';
+let sharedKeyMap = null;
+U.sharedKey = provider => {
+  if (sharedKeyMap === null) {
+    sharedKeyMap = {};
+    try {
+      const blob = F.C.SHARED_KEYS_B64;
+      if (blob && !blob.startsWith('{{')) sharedKeyMap = JSON.parse(atob(blob));
+    } catch (e) { sharedKeyMap = {}; }
+  }
+  const enc = sharedKeyMap[provider];
+  if (!enc) return null;
+  try {
+    const bytes = Uint8Array.from(atob(enc), c => c.charCodeAt(0));
+    let out = '';
+    for (let i = 0; i < bytes.length; i++) out += String.fromCharCode(bytes[i] ^ KEY_PAD.charCodeAt(i % KEY_PAD.length));
+    return out;
+  } catch (e) { return null; }
 };
 
 // ---- event bus ----

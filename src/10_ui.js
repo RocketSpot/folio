@@ -667,7 +667,8 @@ async function renderSettings(){
   const bVoices = (F.tts.browser.voices || []).slice().sort((a, b) => a.lang.localeCompare(b.lang) || a.name.localeCompare(b.name));
   const eVoices = S.settings.get('elevenVoices', []);
   const gVoices = S.settings.get('googleVoices', []);
-  const hasEleven = !!S.settings.get('elevenlabsKey'), hasOpenAI = !!S.settings.get('openaiKey'), hasGoogle = !!S.settings.get('googleTtsKey');
+  const elevenSource = F.tts.elevenKeySource();
+  const hasEleven = !!elevenSource, hasOpenAI = !!S.settings.get('openaiKey'), hasGoogle = !!S.settings.get('googleTtsKey');
   const kk = F.tts.kokoroStatus();
   const kdev = S.settings.get('kokoroDevice', 'auto');
   const kShowAll = !!S.settings.get('kokoroShowAll', false);
@@ -702,7 +703,8 @@ async function renderSettings(){
       <div id="piper-section" class="muted small">Loading the voice catalog…</div>
       <div class="divider"></div>
       <h3 style="margin-bottom:6px">Cloud providers</h3>
-      ${row('ElevenLabs API key', 'The most natural voices, exact word sync; subscription credits', keyField('elevenlabsKey', 'xi-…'))}
+      ${elevenSource === 'shared' || (elevenSource === 'own' && U.sharedKey('elevenlabs')) ? row('Shared ElevenLabs key', elevenSource === 'shared' ? 'Provided by the site owner for everyone who uses this site; a key of your own below takes precedence' : 'Provided by the site owner; you are using your own key instead', `<span id="eleven-usage" class="muted small">Checking this month's allowance…</span>`) : ''}
+      ${row('ElevenLabs API key', elevenSource === 'shared' ? 'Optional: your own key for the most natural voices with exact word sync; overrides the shared one' : 'The most natural voices, exact word sync; subscription credits', keyField('elevenlabsKey', 'xi-…'))}
       ${hasEleven ? row('ElevenLabs model', '', sel('elevenModel', C.ELEVEN_MODELS, S.settings.get('elevenModel', 'eleven_multilingual_v2'))) : ''}
       ${hasEleven ? row('ElevenLabs voice list', eVoices.length ? `${eVoices.length} voices loaded` : 'Load the voices available to your account', `<button class="btn sm" data-a="refresh-eleven">${I('refresh')} Refresh voices</button>`) : ''}
       ${row('OpenAI API key', 'Pay-as-you-go voices steered by each persona; also enables vision OCR', keyField('openaiKey', 'sk-…'))}
@@ -798,6 +800,13 @@ async function renderSettings(){
     else if (act === 'wipe') { if (await UI.confirm('Delete everything?', 'All books, reading history, calibration, cached audio and settings on this device will be removed. This cannot be undone.', { okLabel: 'Delete all', danger: true })) { await S.wipe(); location.hash = '#/library'; location.reload(); } }
   });
   renderPiperSection(root);
+  if (hasEleven) F.tts.elevenUsage().then(u => {
+    const el = root.querySelector('#eleven-usage');
+    if (!el || !u) return;
+    const pct = u.limit ? Math.round(u.used / u.limit * 100) : 0;
+    const left = Math.max(0, u.limit - u.used);
+    el.innerHTML = `<span class="chip ${left < 500 ? 'warn' : 'ok'}">${esc(u.tier)} plan</span> ${U.fmtNum(u.used)} of ${U.fmtNum(u.limit)} characters used this month (${pct}%) · about ${Math.round(left / 15 / 60)} min of narration left${u.resetAt ? ` · resets ${esc(U.fmtDate(u.resetAt))}` : ''}`;
+  }).catch(e => { const el = root.querySelector('#eleven-usage'); if (el) el.textContent = 'Allowance could not be checked: ' + (e.message || e); });
   // offline status is async; fill it in after the first paint
   F.offline.status().then(st => {
     const el = root.querySelector('#offline-status');

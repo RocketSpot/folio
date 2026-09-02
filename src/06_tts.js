@@ -23,11 +23,25 @@ let session = 0;            // increments on every stop/seek; async callbacks ch
 let currentUtterance = null; // keep a reference (Chrome GC bug)
 const emit = () => F.bus.emit('tts', Object.assign({}, state));
 
+// ElevenLabs key: the reader's own key wins; otherwise the owner-provided shared key baked into the build (if any).
+function elevenKey(){ return S.settings.get('elevenlabsKey') || U.sharedKey('elevenlabs') || null; }
+X.elevenKeySource = () => S.settings.get('elevenlabsKey') ? 'own' : (U.sharedKey('elevenlabs') ? 'shared' : null);
+let elevenUsageCache = null;
+X.elevenUsage = async (force) => {
+  const key = elevenKey();
+  if (!key) return null;
+  if (!force && elevenUsageCache && Date.now() - elevenUsageCache.at < 120000) return elevenUsageCache.data;
+  const j = await U.fetchJSON('https://api.elevenlabs.io/v1/user/subscription', { headers: { 'xi-api-key': key } }, 15000);
+  const data = { tier: j.tier, used: j.character_count || 0, limit: j.character_limit || 0, resetAt: j.next_character_count_reset_unix ? j.next_character_count_reset_unix * 1000 : null, source: X.elevenKeySource() };
+  elevenUsageCache = { at: Date.now(), data };
+  return data;
+};
+
 const PROVIDERS = {
   browser:    { name: 'Browser voices',   short: 'Browser',   ready: () => browser.available() },
   kokoro:     { name: 'On-device English (Kokoro)', short: 'On-device', ready: () => kokoroSupported() },
   piper:      { name: 'On-device multilingual (Piper)', short: 'Piper', ready: () => piperSupported() },
-  elevenlabs: { name: 'ElevenLabs',       short: 'ElevenLabs', ready: () => !!S.settings.get('elevenlabsKey') },
+  elevenlabs: { name: 'ElevenLabs',       short: 'ElevenLabs', ready: () => !!elevenKey() },
   openai:     { name: 'OpenAI',           short: 'OpenAI',    ready: () => !!S.settings.get('openaiKey') },
   google:     { name: 'Google Cloud',     short: 'Google',    ready: () => !!S.settings.get('googleTtsKey') },
 };
@@ -49,7 +63,8 @@ X.providerName = id => (PROVIDERS[id] || {}).name || id;
 X.providerShort = id => (PROVIDERS[id] || {}).short || id;
 
 X.init = () => {
-  state.provider = S.settings.get('ttsProvider', 'browser');
+  // First run: prefer the shared ElevenLabs key when the owner shipped one, otherwise browser voices.
+  state.provider = S.settings.get('ttsProvider', U.sharedKey('elevenlabs') ? 'elevenlabs' : 'browser');
   state.personaId = S.settings.get('ttsPersona', 'calm-narrator');
   state.speed = +S.settings.get('ttsSpeed', 1) || 1;
   if (!X.providerReady(state.provider)) state.provider = 'browser';
@@ -360,9 +375,10 @@ function escXml(s){ return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;'
 
 // ---------- ElevenLabs ----------
 async function synthElevenLabs(text, persona){
-  const key = S.settings.get('elevenlabsKey');
+  const key = elevenKey();
   if (!key) throw new Error('Add your ElevenLabs API key in Settings.');
-  const voiceId = resolveElevenVoice(persona);
+  let voiceId = resolveElevenVoice(persona);
+  if (!voiceId) { try { await X.fetchElevenVoices(); voiceId = resolveElevenVoice(persona); } catch (e) {} }
   if (!voiceId) throw new Error('No ElevenLabs voice is available. Open Settings → Voices and refresh the voice list.');
   const model = S.settings.get('elevenModel', 'eleven_multilingual_v2');
   const r = await U.fetchWithTimeout(`https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(voiceId)}/with-timestamps?output_format=mp3_44100_128`, {
@@ -370,17 +386,24 @@ async function synthElevenLabs(text, persona){
     body: JSON.stringify({ text, model_id: model, voice_settings: { stability: 0.5, similarity_boost: 0.75, style: 0.15, use_speaker_boost: true } }),
   }, 120000);
   if (!r.ok) {
-    let msg = `ElevenLabs error ${r.status}`;
-    try { const j = await r.json(); msg += ': ' + ((j.detail && (j.detail.message || j.detail.status)) || JSON.stringify(j).slice(0, 160)); } catch (e) {}
-    if (r.status === 401) msg = 'ElevenLabs rejected the API key (401). Check it in Settings.';
-    throw new Error(msg);
+    let detail = null;
+    try { const j = await r.json(); detail = j.detail || j; } catch (e) {}
+    const status = String((detail && (detail.status || detail.code)) || '').toLowerCase();
+    const text2 = String((detail && (detail.message || detail.detail)) || '').toLowerCase();
+    const shared = X.elevenKeySource() === 'shared';
+    let msg = `ElevenLabs error ${r.status}${detail ? ': ' + ((detail.message || detail.status || JSON.stringify(detail)).toString().slice(0, 160)) : ''}`;
+    const err = new Error(msg);
+    if (status.includes('quota') || text2.includes('quota') || text2.includes('exceeds')) { err.code = 'quota'; err.message = shared ? 'The shared ElevenLabs allowance for this month is used up.' : 'Your ElevenLabs allowance for this month is used up.'; }
+    else if (status.includes('unusual_activity') || text2.includes('unusual activity')) { err.code = 'blocked'; err.message = 'ElevenLabs paused this free key for unusual activity. Use an on-device voice or your own key.'; }
+    else if (r.status === 401) { err.code = 'auth'; err.message = shared ? 'The shared ElevenLabs key was revoked or is invalid.' : 'ElevenLabs rejected the API key (401). Check it in Settings.'; }
+    throw err;
   }
   const j = await r.json();
   const al = j.alignment || j.normalized_alignment;
   return { blob: b64ToBlob(j.audio_base64, 'audio/mpeg'), chars: al ? { starts: al.character_start_times_seconds, ends: al.character_end_times_seconds, n: (al.characters || []).length } : null };
 }
 X.fetchElevenVoices = async () => {
-  const key = S.settings.get('elevenlabsKey');
+  const key = elevenKey();
   if (!key) throw new Error('Add your ElevenLabs API key first.');
   const j = await U.fetchJSON('https://api.elevenlabs.io/v1/voices', { headers: { 'xi-api-key': key } }, 20000);
   const voices = (j.voices || []).map(v => ({ id: v.voice_id, name: v.name, labels: Object.values(v.labels || {}).map(x => String(x).toLowerCase()), category: v.category }));
@@ -921,7 +944,18 @@ async function playUnitFrom(loc, mySession){
   const defs = unitsOfParagraph(loc.c, loc.p);
   const def = defs.find(d => loc.s >= d.sStart && loc.s < d.sEnd) || defs[0];
   let rec;
-  try { if (prefetching) await prefetching; rec = await ensureUnitAudio(def); } catch (e) { if (mySession === session) fail(e.message || String(e)); return; }
+  try { if (prefetching) await prefetching; rec = await ensureUnitAudio(def); }
+  catch (e) {
+    if (mySession !== session) return;
+    // A cloud allowance ran out or a key was revoked: fall back to an on-device voice and keep reading.
+    if ((e.code === 'quota' || e.code === 'auth' || e.code === 'blocked') && state.provider === 'elevenlabs') {
+      const fb = kokoroSupported() && X.bookLang() === 'en' ? 'kokoro' : piperSupported() ? 'piper' : 'browser';
+      F.bus.emit('tts-error', { message: `${e.message} Switching to ${X.providerName(fb)}.` });
+      state.provider = fb; S.settings.set('ttsProvider', fb); emit();
+      return X.play(loc);
+    }
+    fail(e.message || String(e)); return;
+  }
   if (mySession !== session) return;
   unit = Object.assign({}, def, rec);
   if (!audioEl) { audioEl = new Audio(); audioEl.preload = 'auto'; }
