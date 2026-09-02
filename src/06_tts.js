@@ -275,10 +275,13 @@ function unitsOfParagraph(c, p){
   const para = content.chapters[c].paras[p];
   const tok = T.tokenize(para);
   const units = [];
+  // On-device generation can be slower than real time on weaker hardware, so keep its units short:
+  // the first audio arrives sooner and the next unit is generated while this one plays.
+  const maxChars = state.provider === 'kokoro' ? (kokoro.device === 'webgpu' ? 900 : 320) : MAX_UNIT_CHARS;
   let start = 0;
   while (start < tok.sentences.length) {
     let end = start, chars = 0;
-    while (end < tok.sentences.length && (chars + tok.sentences[end].text.length <= MAX_UNIT_CHARS || end === start)) { chars += tok.sentences[end].text.length + 1; end++; }
+    while (end < tok.sentences.length && (chars + tok.sentences[end].text.length <= maxChars || end === start)) { chars += tok.sentences[end].text.length + 1; end++; }
     const first = tok.sentences[start], last = tok.sentences[end - 1];
     units.push({ c, p, sStart: start, sEnd: end, charBase: first.start, text: para.slice(first.start, last.start + last.text.length) });
     start = end;
@@ -469,7 +472,10 @@ X.loadKokoro = (onProgress) => {
   kokoro.loading = (async () => {
     const mod = await import(C.CDN.KOKORO);
     const pref = S.settings.get('kokoroDevice', 'auto');
-    const wantGpu = pref === 'gpu' || (pref === 'auto' && !!navigator.gpu);
+    // navigator.gpu can exist without a usable adapter (headless browsers, blocked drivers): probe before committing to the GPU build.
+    let gpuOk = false;
+    if (pref !== 'cpu' && navigator.gpu) { try { gpuOk = !!(await Promise.race([navigator.gpu.requestAdapter(), new Promise(r => setTimeout(() => r(null), 3000))])); } catch (e) { gpuOk = false; } }
+    const wantGpu = pref === 'gpu' ? gpuOk : (pref === 'auto' && gpuOk);
     const files = {};
     const progress = p => {
       if (!p || !p.file) return;
