@@ -1,4 +1,4 @@
-/* 06_tts.js — text-to-speech: browser voices (default), ElevenLabs (word timestamps), OpenAI TTS; playback controller with word sync */
+/* 06_tts.js — speech providers (browser voices, on-device Kokoro, ElevenLabs, OpenAI, Google Cloud), playback controller, word sync */
 (function(){
 'use strict';
 const F = window.F;
@@ -7,7 +7,7 @@ const X = F.tts = {};
 
 const state = X.state = {
   status: 'idle',            // idle | loading | playing | paused
-  provider: 'browser',       // browser | elevenlabs | openai
+  provider: 'browser',       // browser | kokoro | elevenlabs | openai | google
   personaId: 'calm-narrator',
   speed: 1,
   bookId: null,
@@ -22,6 +22,18 @@ let book = null, content = null;
 let session = 0;            // increments on every stop/seek; async callbacks check it
 let currentUtterance = null; // keep a reference (Chrome GC bug)
 const emit = () => F.bus.emit('tts', Object.assign({}, state));
+
+const PROVIDERS = {
+  browser:    { name: 'Browser voices',   short: 'Browser',   ready: () => browser.available() },
+  kokoro:     { name: 'On-device (Kokoro)', short: 'On-device', ready: () => kokoroSupported() },
+  elevenlabs: { name: 'ElevenLabs',       short: 'ElevenLabs', ready: () => !!S.settings.get('elevenlabsKey') },
+  openai:     { name: 'OpenAI',           short: 'OpenAI',    ready: () => !!S.settings.get('openaiKey') },
+  google:     { name: 'Google Cloud',     short: 'Google',    ready: () => !!S.settings.get('googleTtsKey') },
+};
+X.PROVIDERS = PROVIDERS;
+X.providerReady = id => !!(PROVIDERS[id] && PROVIDERS[id].ready());
+X.providerName = id => (PROVIDERS[id] || {}).name || id;
+X.providerShort = id => (PROVIDERS[id] || {}).short || id;
 
 X.init = () => {
   state.provider = S.settings.get('ttsProvider', 'browser');
@@ -39,8 +51,6 @@ X.load = (b, c) => {
   if (!b) state.loc = null;
 };
 X.isPlaying = () => state.status === 'playing' || state.status === 'loading';
-X.providerReady = id => id === 'browser' ? browser.available() : id === 'elevenlabs' ? !!S.settings.get('elevenlabsKey') : id === 'openai' ? !!S.settings.get('openaiKey') : false;
-X.providerName = id => ({ browser: 'Browser voices', elevenlabs: 'ElevenLabs', openai: 'OpenAI' })[id] || id;
 
 function fail(msg){
   state.status = 'idle'; state.error = msg; state.loadingMsg = '';
@@ -79,12 +89,17 @@ function sleepStop(){
   emit();
   F.bus.emit('tts-sleep', {});
 }
+function setLoading(msg){
+  if (state.status !== 'loading' && state.status !== 'playing') return;
+  if (state.loadingMsg !== msg) { state.loadingMsg = msg; emit(); }
+}
 
 // =====================================================================
 // Browser speech synthesis
 // =====================================================================
 const browser = X.browser = {
   voices: [],
+  blocked: new Set(),
   available: () => 'speechSynthesis' in window && 'SpeechSynthesisUtterance' in window,
   loadVoices(){
     return new Promise(res => {
@@ -97,23 +112,23 @@ const browser = X.browser = {
     });
   },
   pickVoice(persona, lang){
-    const voices = this.voices.length ? this.voices : (speechSynthesis.getVoices() || []);
-    if (!voices.length) return null;
+    const all = this.voices.length ? this.voices : (speechSynthesis.getVoices() || []);
+    if (!all.length) return null;
+    const voices = all.filter(v => !this.blocked.has(v.voiceURI));
+    if (!voices.length) { this.blocked.clear(); return all[0]; }
     const override = S.settings.get('browserVoice:' + persona.id);
     if (override) { const v = voices.find(v => v.voiceURI === override || v.name === override); if (v) return v; }
     const pref = (lang || (book && book.language) || navigator.language || 'en').slice(0, 2).toLowerCase();
-    let pool = voices.filter(v => v.lang && v.lang.toLowerCase().startsWith(pref) && !this.blocked.has(v.voiceURI));
-    if (!pool.length) pool = voices.filter(v => v.lang && v.lang.toLowerCase().startsWith('en') && !this.blocked.has(v.voiceURI));
-    if (!pool.length) pool = voices.filter(v => !this.blocked.has(v.voiceURI));
-    if (!pool.length) { this.blocked.clear(); pool = voices.slice(); }
+    let pool = voices.filter(v => v.lang && v.lang.toLowerCase().startsWith(pref));
+    if (!pool.length) pool = voices.filter(v => v.lang && v.lang.toLowerCase().startsWith('en'));
+    if (!pool.length) pool = voices.slice();
+    const quality = pool.filter(v => /premium|enhanced|natural|neural|siri/i.test(v.name));
     for (const hint of persona.browserHints || []) {
-      const v = pool.find(v => v.name.toLowerCase().includes(hint.toLowerCase()));
+      const v = quality.find(v => v.name.toLowerCase().includes(hint.toLowerCase())) || pool.find(v => v.name.toLowerCase().includes(hint.toLowerCase()));
       if (v) return v;
     }
-    // on-device voices start reliably; remote ones can hang when offline
-    return pool.find(v => v.localService && /premium|enhanced|natural|neural/i.test(v.name)) || pool.find(v => v.localService && v.default) || pool.find(v => v.localService) || pool.find(v => /premium|enhanced|natural|neural/i.test(v.name)) || pool.find(v => v.default) || pool[0];
+    return quality[0] || pool.find(v => v.localService) || pool.find(v => v.default) || pool[0];
   },
-  blocked: new Set(),   // voices that failed to start in this session
 };
 const est = { cps: +S.settings.get('ttsCps', 15.5) || 15.5 }; // characters per second at rate 1 (learned)
 
@@ -161,10 +176,10 @@ function speakSentence(loc, startWord, mySession, delayMs){
     u.volume = 1;
     const chunkStartWord = wordAtChar(words, fromChar + chunk.offset);
     const chunkEndWord = wordAtChar(words, fromChar + chunk.offset + chunk.text.length - 1);
-    let gotBoundary = false, startedAt = 0, ended = false, estTimer = null, estTick = null;
+    let gotBoundary = false, startedAt = 0, ended = false, estTimer = null, estTick = null, watchdog = null;
     const stopEstimate = () => { if (estTick) { clearTimeout(estTick); estTick = null; } if (estTimer) { clearTimeout(estTimer); estTimer = null; } if (watchdog) { clearTimeout(watchdog); watchdog = null; } };
     // If the engine never reports a start, the voice is unusable here (typical for some remote voices offline): try another voice once, then give up clearly.
-    let watchdog = setTimeout(() => {
+    watchdog = setTimeout(() => {
       if (startedAt || ended || mySession !== session) return;
       ended = true; stopEstimate();
       try { speechSynthesis.cancel(); } catch (err) {}
@@ -197,6 +212,8 @@ function speakSentence(loc, startWord, mySession, delayMs){
     u.onstart = () => {
       if (mySession !== session) return;
       startedAt = performance.now();
+      speakSentence.retried = false;
+      if (watchdog) { clearTimeout(watchdog); watchdog = null; }
       if (state.status !== 'playing') { state.status = 'playing'; state.loadingMsg = ''; emit(); }
       setWord(chunkStartWord);
       estTimer = setTimeout(() => { if (!gotBoundary && !ended && mySession === session) runEstimate(); }, 550);
@@ -205,7 +222,8 @@ function speakSentence(loc, startWord, mySession, delayMs){
       if (mySession !== session || ended) return;
       if (e.name && e.name !== 'word') return;
       gotBoundary = true;
-      stopEstimate();
+      if (estTick) { clearTimeout(estTick); estTick = null; }
+      if (estTimer) { clearTimeout(estTimer); estTimer = null; }
       setWord(wordAtChar(words, fromChar + chunk.offset + (e.charIndex || 0)));
     };
     u.onend = () => {
@@ -246,7 +264,7 @@ function advanceSentence(mySession){
 }
 
 // =====================================================================
-// Provider audio (ElevenLabs / OpenAI) — per paragraph units with word timing
+// Audio providers — per-paragraph units with word timing
 // =====================================================================
 let audioEl = null;
 let unit = null;
@@ -268,6 +286,12 @@ function unitsOfParagraph(c, p){
   if (!units.length) units.push({ c, p, sStart: 0, sEnd: 0, charBase: 0, text: '' });
   return units;
 }
+function unitSentences(def){
+  const tok = T.tokenize(content.chapters[def.c].paras[def.p]);
+  const out = [];
+  for (let s = def.sStart; s < def.sEnd; s++) out.push({ s, text: tok.sentences[s].text, len: tok.sentences[s].text.length });
+  return out;
+}
 function unitWords(def){
   const tok = T.tokenize(content.chapters[def.c].paras[def.p]);
   const out = [];
@@ -277,16 +301,27 @@ function unitWords(def){
   }
   return out;
 }
-function voiceKey(){
-  const persona = X.persona();
-  if (state.provider === 'elevenlabs') return `${resolveElevenVoice(persona)}|${S.settings.get('elevenModel', 'eleven_multilingual_v2')}`;
-  return `${S.settings.get('openaiVoice:' + persona.id) || persona.openaiVoice}|${S.settings.get('openaiTtsModel', 'gpt-4o-mini-tts')}|${persona.id}`;
-}
-function estimateWordTimes(words, duration){
-  const weights = words.map(w => w.len + 1 + (/[,;:]$/.test(w.text) ? 2.5 : /[.!?…]["”’)]*$/.test(w.text) ? 5 : 0));
+function wordWeight(w){ return w.len + 1 + (/[,;:]$/.test(w.text) ? 2.5 : /[.!?…]["”’)]*$/.test(w.text) ? 5 : 0); }
+/** Distribute word times over [start, end) proportional to weights. */
+function spread(words, start, end){
+  const weights = words.map(wordWeight);
   const total = weights.reduce((a, b) => a + b, 0) || 1;
   let acc = 0;
-  return words.map((w, i) => { const start = acc / total * duration; acc += weights[i]; return { start, end: acc / total * duration }; });
+  return words.map((w, i) => { const a = start + acc / total * (end - start); acc += weights[i]; return { start: a, end: start + acc / total * (end - start) }; });
+}
+function estimateWordTimes(words, duration){ return spread(words, 0, duration); }
+/** Exact sentence boundaries (segments: [{sStart, sEnd, start, end}]) with words spread inside each segment. */
+function timesFromSegments(words, segments){
+  const times = new Array(words.length);
+  for (const seg of segments) {
+    const idx = [];
+    words.forEach((w, i) => { if (w.s >= seg.sStart && w.s < seg.sEnd) idx.push(i); });
+    if (!idx.length) continue;
+    const t = spread(idx.map(i => words[i]), seg.start, seg.end);
+    idx.forEach((i, k) => { times[i] = t[k]; });
+  }
+  for (let i = 0; i < times.length; i++) if (!times[i]) times[i] = times[i - 1] || { start: 0, end: 0 };
+  return times;
 }
 function blobDuration(blob){
   return new Promise((res) => {
@@ -299,22 +334,20 @@ function blobDuration(blob){
     setTimeout(() => done(a.duration), 6000);
   });
 }
-async function synthesize(def){
-  const persona = X.persona();
-  if (state.provider === 'elevenlabs') return synthElevenLabs(def.text, persona);
-  return synthOpenAI(def.text, persona);
-}
 function b64ToBlob(b64, type){
   const bin = atob(b64);
   const arr = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
   return new Blob([arr], { type });
 }
+function escXml(s){ return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
+
+// ---------- ElevenLabs ----------
 async function synthElevenLabs(text, persona){
   const key = S.settings.get('elevenlabsKey');
   if (!key) throw new Error('Add your ElevenLabs API key in Settings.');
   const voiceId = resolveElevenVoice(persona);
-  if (!voiceId) throw new Error('No ElevenLabs voice is available. Open Settings → Voices to refresh the voice list.');
+  if (!voiceId) throw new Error('No ElevenLabs voice is available. Open Settings → Voices and refresh the voice list.');
   const model = S.settings.get('elevenModel', 'eleven_multilingual_v2');
   const r = await U.fetchWithTimeout(`https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(voiceId)}/with-timestamps?output_format=mp3_44100_128`, {
     method: 'POST', headers: { 'xi-api-key': key, 'Content-Type': 'application/json' },
@@ -330,6 +363,32 @@ async function synthElevenLabs(text, persona){
   const al = j.alignment || j.normalized_alignment;
   return { blob: b64ToBlob(j.audio_base64, 'audio/mpeg'), chars: al ? { starts: al.character_start_times_seconds, ends: al.character_end_times_seconds, n: (al.characters || []).length } : null };
 }
+X.fetchElevenVoices = async () => {
+  const key = S.settings.get('elevenlabsKey');
+  if (!key) throw new Error('Add your ElevenLabs API key first.');
+  const j = await U.fetchJSON('https://api.elevenlabs.io/v1/voices', { headers: { 'xi-api-key': key } }, 20000);
+  const voices = (j.voices || []).map(v => ({ id: v.voice_id, name: v.name, labels: Object.values(v.labels || {}).map(x => String(x).toLowerCase()), category: v.category }));
+  await S.settings.set('elevenVoices', voices);
+  return voices;
+};
+function resolveElevenVoice(persona){
+  const override = S.settings.get('elevenVoice:' + persona.id);
+  if (override) return override;
+  const voices = S.settings.get('elevenVoices', []);
+  if (!voices.length) return null;
+  let best = null, bestScore = -1;
+  for (const v of voices) {
+    const text = (v.labels || []).join(' ') + ' ' + v.name.toLowerCase();
+    let score = 0;
+    for (const l of persona.labels) if (text.includes(l)) score += 1;
+    if (v.category === 'premade') score += 0.2;
+    if (score > bestScore) { bestScore = score; best = v; }
+  }
+  return best ? best.id : voices[0].id;
+}
+X.resolveElevenVoice = resolveElevenVoice;
+
+// ---------- OpenAI ----------
 async function synthOpenAI(text, persona){
   const key = S.settings.get('openaiKey');
   if (!key) throw new Error('Add your OpenAI API key in Settings.');
@@ -346,15 +405,197 @@ async function synthOpenAI(text, persona){
   }
   return { blob: await r.blob(), chars: null };
 }
+
+// ---------- Google Cloud Text-to-Speech ----------
+const GOOGLE_TTS = 'https://texttospeech.googleapis.com/v1beta1';
+X.fetchGoogleVoices = async () => {
+  const key = S.settings.get('googleTtsKey');
+  if (!key) throw new Error('Add your Google Cloud API key first.');
+  const j = await U.fetchJSON(`${GOOGLE_TTS}/voices?languageCode=en&key=${encodeURIComponent(key)}`, {}, 20000);
+  const voices = (j.voices || []).filter(v => /Chirp3-HD|Neural2|Studio|Wavenet/i.test(v.name)).map(v => ({ name: v.name, gender: (v.ssmlGender || '').toLowerCase(), lang: (v.languageCodes || [])[0] || 'en-US', family: /Chirp3-HD/i.test(v.name) ? 'Chirp 3 HD' : /Neural2/i.test(v.name) ? 'Neural2' : /Studio/i.test(v.name) ? 'Studio' : 'WaveNet' }))
+    .sort((a, b) => ['Chirp 3 HD', 'Studio', 'Neural2', 'WaveNet'].indexOf(a.family) - ['Chirp 3 HD', 'Studio', 'Neural2', 'WaveNet'].indexOf(b.family) || a.name.localeCompare(b.name));
+  await S.settings.set('googleVoices', voices);
+  return voices;
+};
+function resolveGoogleVoice(persona){
+  const override = S.settings.get('googleVoice:' + persona.id);
+  if (override) return override;
+  const list = S.settings.get('googleVoices', []);
+  const prefs = [].concat(persona.googleVoice || []);
+  if (list.length) {
+    for (const p of prefs) if (list.find(v => v.name === p)) return p;
+    const hd = list.find(v => v.family === 'Chirp 3 HD' && v.lang === 'en-US') || list[0];
+    return hd.name;
+  }
+  return prefs[0] || 'en-US-Chirp3-HD-Charon';
+}
+X.resolveGoogleVoice = resolveGoogleVoice;
+async function synthGoogle(def, persona){
+  const key = S.settings.get('googleTtsKey');
+  if (!key) throw new Error('Add your Google Cloud API key in Settings.');
+  const name = resolveGoogleVoice(persona);
+  const languageCode = name.split('-').slice(0, 2).join('-');
+  const chirp = /Chirp/i.test(name);
+  const sentences = def.sentences || [{ s: 0, text: def.text }];
+  const body = { voice: { languageCode, name }, audioConfig: { audioEncoding: 'MP3', speakingRate: U.clamp(persona.rate || 1, 0.5, 1.5) } };
+  if (chirp) body.input = { text: def.text };
+  else { body.input = { ssml: '<speak>' + sentences.map((x, i) => `<mark name="s${i}"/>` + escXml(x.text)).join(' ') + '</speak>' }; body.enableTimePointing = ['SSML_MARK']; }
+  const r = await U.fetchWithTimeout(`${GOOGLE_TTS}/text:synthesize?key=${encodeURIComponent(key)}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }, 60000);
+  if (!r.ok) {
+    let msg = `Google Cloud TTS error ${r.status}`;
+    try { const j = await r.json(); msg += ': ' + ((j.error && j.error.message) || '').slice(0, 220); } catch (e) {}
+    if (r.status === 403) msg += ' (check that the Text-to-Speech API is enabled and the key allows this website)';
+    throw new Error(msg);
+  }
+  const j = await r.json();
+  const blob = b64ToBlob(j.audioContent, 'audio/mpeg');
+  let segments = null;
+  if (j.timepoints && j.timepoints.length && sentences.length) {
+    const starts = j.timepoints.map(tp => ({ i: +String(tp.markName).slice(1), t: +tp.timeSeconds })).sort((a, b) => a.i - b.i);
+    const duration = await blobDuration(blob);
+    segments = starts.map((st, k) => ({ sStart: sentences[st.i].s, sEnd: sentences[st.i].s + 1, start: st.t, end: k + 1 < starts.length ? starts[k + 1].t : (duration || st.t + 3) }));
+  }
+  return { blob, chars: null, segments };
+}
+
+// ---------- Kokoro (on-device) ----------
+const kokoro = { tts: null, loading: null, progress: 0, device: null, dtype: null, error: null, mem: new Map(), lastEmit: 0 };
+function kokoroSupported(){ return typeof WebAssembly !== 'undefined' && typeof AudioContext !== 'undefined'; }
+X.kokoroStatus = () => ({ supported: kokoroSupported(), loaded: !!kokoro.tts, loading: !!kokoro.loading && !kokoro.tts, progress: kokoro.progress, device: kokoro.device, dtype: kokoro.dtype, error: kokoro.error ? (kokoro.error.message || String(kokoro.error)) : null, gpuAvailable: !!navigator.gpu });
+X.loadKokoro = (onProgress) => {
+  if (kokoro.tts) return Promise.resolve(kokoro.tts);
+  if (kokoro.loading) return kokoro.loading;
+  kokoro.error = null;
+  kokoro.loading = (async () => {
+    const mod = await import(C.CDN.KOKORO);
+    const pref = S.settings.get('kokoroDevice', 'auto');
+    const wantGpu = pref === 'gpu' || (pref === 'auto' && !!navigator.gpu);
+    const files = {};
+    const progress = p => {
+      if (!p || !p.file) return;
+      if (p.status === 'progress' || p.status === 'done') files[p.file] = { loaded: p.status === 'done' ? (p.total || files[p.file] && files[p.file].total || 0) : (p.loaded || 0), total: p.total || (files[p.file] && files[p.file].total) || 0 };
+      const tot = Object.values(files).reduce((a, f) => a + f.total, 0), got = Object.values(files).reduce((a, f) => a + Math.min(f.loaded, f.total || f.loaded), 0);
+      kokoro.progress = tot ? got / tot : 0;
+      const now = Date.now();
+      if (now - kokoro.lastEmit > 250) { kokoro.lastEmit = now; onProgress && onProgress(kokoro.progress, got, tot); F.bus.emit('kokoro-progress', { progress: kokoro.progress, loaded: got, total: tot }); }
+    };
+    const attempt = async (device, dtype) => {
+      const tts = await mod.KokoroTTS.from_pretrained(C.KOKORO_MODEL, { dtype, device, progress_callback: progress });
+      kokoro.device = device; kokoro.dtype = dtype;
+      return tts;
+    };
+    try {
+      kokoro.tts = wantGpu ? await attempt('webgpu', 'fp32') : await attempt('wasm', 'q8');
+    } catch (e) {
+      if (!wantGpu) throw e;
+      console.warn('[kokoro] WebGPU load failed, falling back to WASM', e);
+      kokoro.tts = await attempt('wasm', 'q8');
+    }
+    kokoro.progress = 1;
+    F.bus.emit('kokoro-progress', { progress: 1, done: true });
+    return kokoro.tts;
+  })().catch(e => { kokoro.loading = null; kokoro.error = e; throw e; });
+  return kokoro.loading;
+};
+function floatToWav(samples, sampleRate){
+  const buf = new ArrayBuffer(44 + samples.length * 2);
+  const v = new DataView(buf);
+  const str = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+  str(0, 'RIFF'); v.setUint32(4, 36 + samples.length * 2, true); str(8, 'WAVE'); str(12, 'fmt ');
+  v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true); v.setUint32(24, sampleRate, true); v.setUint32(28, sampleRate * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+  str(36, 'data'); v.setUint32(40, samples.length * 2, true);
+  let o = 44;
+  for (let i = 0; i < samples.length; i++, o += 2) { const s = Math.max(-1, Math.min(1, samples[i])); v.setInt16(o, s < 0 ? s * 0x8000 : s * 0x7fff, true); }
+  return new Blob([buf], { type: 'audio/wav' });
+}
+/** Group sentences so each generation call is 60–380 characters (the model dislikes very short and very long inputs). */
+function kokoroGroups(sentences){
+  const groups = [];
+  let cur = null;
+  for (const s of sentences) {
+    if (cur && cur.text.length + 1 + s.len <= 380 && (cur.text.length < 60 || s.len < 40)) { cur.text += ' ' + s.text; cur.sEnd = s.s + 1; continue; }
+    if (cur) groups.push(cur);
+    cur = { sStart: s.s, sEnd: s.s + 1, text: s.text };
+  }
+  if (cur) groups.push(cur);
+  const out = [];
+  for (const g of groups) {
+    if (g.text.length <= 420) { out.push(g); continue; }
+    for (const ch of chunkText(g.text, 380)) out.push({ sStart: g.sStart, sEnd: g.sEnd, text: ch.text, partial: true });
+  }
+  return out;
+}
+async function synthKokoro(def, persona){
+  const tts = await X.loadKokoro((p, got, tot) => setLoading(`Downloading voice model ${Math.round(p * 100)}%${tot ? ` · ${(got / 1e6).toFixed(0)} / ${(tot / 1e6).toFixed(0)} MB` : ''}`));
+  setLoading('Generating speech on this device…');
+  const voice = S.settings.get('kokoroVoice:' + persona.id) || persona.kokoroVoice || 'af_heart';
+  const speed = U.clamp(persona.kokoroSpeed || persona.rate || 1, 0.6, 1.4);
+  const sentences = def.sentences || [{ s: 0, text: def.text, len: def.text.length }];
+  const groups = kokoroGroups(sentences);
+  const pieces = [];
+  let sr = 24000, total = 0;
+  const gap = Math.round(0.24 * sr);
+  const segments = [];
+  for (const g of groups) {
+    const audio = await tts.generate(g.text, { voice, speed });
+    const data = audio.audio || audio.data || audio;
+    sr = audio.sampling_rate || sr;
+    const start = total / sr;
+    pieces.push(data); total += data.length;
+    pieces.push(new Float32Array(gap)); total += gap;
+    const end = (total - gap) / sr;
+    const last = segments[segments.length - 1];
+    if (g.partial && last && last.sStart === g.sStart && last.sEnd === g.sEnd) last.end = end;
+    else segments.push({ sStart: g.sStart, sEnd: g.sEnd, start, end });
+  }
+  const all = new Float32Array(total);
+  let off = 0;
+  for (const p of pieces) { all.set(p, off); off += p.length; }
+  return { blob: floatToWav(all, sr), chars: null, segments, duration: total / sr };
+}
+X.kokoroPreviewVoice = async (voiceId, text) => {
+  const tts = await X.loadKokoro();
+  const audio = await tts.generate(text || 'This is how I read. The evening was quiet, and the pages turned at their own pace.', { voice: voiceId, speed: 1 });
+  const data = audio.audio || audio.data || audio;
+  const blob = floatToWav(data, audio.sampling_rate || 24000);
+  const a = new Audio(URL.createObjectURL(blob));
+  await a.play();
+  return a;
+};
+
+// ---------- shared unit pipeline ----------
+function voiceKey(){
+  const persona = X.persona();
+  switch (state.provider) {
+    case 'elevenlabs': return `${resolveElevenVoice(persona)}|${S.settings.get('elevenModel', 'eleven_multilingual_v2')}`;
+    case 'openai': return `${S.settings.get('openaiVoice:' + persona.id) || persona.openaiVoice}|${S.settings.get('openaiTtsModel', 'gpt-4o-mini-tts')}|${persona.id}`;
+    case 'google': return `${resolveGoogleVoice(persona)}|${persona.rate}`;
+    case 'kokoro': return `${S.settings.get('kokoroVoice:' + persona.id) || persona.kokoroVoice}|${persona.kokoroSpeed || persona.rate}`;
+    default: return persona.id;
+  }
+}
+async function synthesize(def){
+  const persona = X.persona();
+  def.sentences = def.sentences || (content ? unitSentences(def) : null);
+  switch (state.provider) {
+    case 'elevenlabs': return synthElevenLabs(def.text, persona);
+    case 'openai': return synthOpenAI(def.text, persona);
+    case 'google': return synthGoogle(def, persona);
+    case 'kokoro': return synthKokoro(def, persona);
+    default: throw new Error('Unknown provider');
+  }
+}
 async function ensureUnitAudio(def){
   const key = `${book.id}|${state.provider}|${voiceKey()}|${def.c}|${def.p}|${def.sStart}`;
+  const persist = state.provider !== 'kokoro';
   let rec = null;
-  try { rec = await S.get('audio', key); } catch (e) {}
+  if (persist) { try { rec = await S.get('audio', key); } catch (e) {} }
+  else rec = kokoro.mem.get(key) || null;
   const words = unitWords(def);
   if (!rec) {
     if (!def.text.trim()) throw new Error('Nothing to read here.');
-    const { blob, chars } = await synthesize(def);
-    let times = null, duration = null;
+    const { blob, chars, segments, duration: knownDuration } = await synthesize(def);
+    let times = null, duration = knownDuration || null;
     if (chars && chars.starts && chars.starts.length) {
       const scale = chars.n && chars.n !== def.text.length ? chars.n / def.text.length : 1;
       const n = chars.starts.length;
@@ -364,12 +605,16 @@ async function ensureUnitAudio(def){
         return { start: chars.starts[a], end: (chars.ends && chars.ends[b]) || chars.starts[b] };
       });
       duration = (chars.ends && chars.ends[n - 1]) || chars.starts[n - 1];
+    } else if (segments && segments.length) {
+      times = timesFromSegments(words, segments);
+      duration = duration || segments[segments.length - 1].end;
     } else {
-      duration = await blobDuration(blob);
+      duration = duration || await blobDuration(blob);
       if (duration) times = estimateWordTimes(words, duration);
     }
     rec = { key, bookId: book.id, blob, times, duration, createdAt: Date.now(), chars: def.text.length };
-    try { await S.put('audio', rec); } catch (e) { console.warn('audio cache write failed', e); }
+    if (persist) { try { await S.put('audio', rec); } catch (e) { console.warn('audio cache write failed', e); } }
+    else { kokoro.mem.set(key, rec); if (kokoro.mem.size > 10) { const k0 = kokoro.mem.keys().next().value; const u0 = urlCache.get(k0); if (u0) { URL.revokeObjectURL(u0); urlCache.delete(k0); } kokoro.mem.delete(k0); } }
   }
   let url = urlCache.get(key);
   if (!url) { url = URL.createObjectURL(rec.blob); urlCache.set(key, url); if (urlCache.size > 40) { const [k0, u0] = urlCache.entries().next().value; URL.revokeObjectURL(u0); urlCache.delete(k0); } }
@@ -386,21 +631,22 @@ function nextUnitStart(u){
   if (u.sEnd < T.tokenize(content.chapters[u.c].paras[u.p]).sentences.length) return { c: u.c, p: u.p, s: u.sEnd, w: 0 };
   return T.nextParagraph(content, { c: u.c, p: u.p });
 }
+let prefetching = null;
 function prefetch(loc){
-  if (!loc) return;
+  if (!loc || prefetching) return;
   try {
     const defs = unitsOfParagraph(loc.c, loc.p);
     const def = defs.find(d => loc.s >= d.sStart && loc.s < d.sEnd) || defs[0];
-    ensureUnitAudio(def).catch(() => {});
-  } catch (e) {}
+    prefetching = ensureUnitAudio(def).catch(() => {}).then(() => { prefetching = null; });
+  } catch (e) { prefetching = null; }
 }
 async function playUnitFrom(loc, mySession){
-  state.status = 'loading'; state.loadingMsg = 'Generating audio…'; state.error = null;
+  state.status = 'loading'; state.loadingMsg = state.provider === 'kokoro' ? 'Preparing on-device voice…' : 'Generating audio…'; state.error = null;
   emit();
   const defs = unitsOfParagraph(loc.c, loc.p);
   const def = defs.find(d => loc.s >= d.sStart && loc.s < d.sEnd) || defs[0];
   let rec;
-  try { rec = await ensureUnitAudio(def); } catch (e) { if (mySession === session) fail(e.message || String(e)); return; }
+  try { if (prefetching) await prefetching; rec = await ensureUnitAudio(def); } catch (e) { if (mySession === session) fail(e.message || String(e)); return; }
   if (mySession !== session) return;
   unit = Object.assign({}, def, rec);
   if (!audioEl) { audioEl = new Audio(); audioEl.preload = 'auto'; }
@@ -461,39 +707,13 @@ function updateMediaSession(){
   } catch (e) {}
 }
 
-// ---------- ElevenLabs voices ----------
-X.fetchElevenVoices = async () => {
-  const key = S.settings.get('elevenlabsKey');
-  if (!key) throw new Error('Add your ElevenLabs API key first.');
-  const j = await U.fetchJSON('https://api.elevenlabs.io/v1/voices', { headers: { 'xi-api-key': key } }, 20000);
-  const voices = (j.voices || []).map(v => ({ id: v.voice_id, name: v.name, labels: Object.values(v.labels || {}).map(x => String(x).toLowerCase()), category: v.category }));
-  await S.settings.set('elevenVoices', voices);
-  return voices;
-};
-function resolveElevenVoice(persona){
-  const override = S.settings.get('elevenVoice:' + persona.id);
-  if (override) return override;
-  const voices = S.settings.get('elevenVoices', []);
-  if (!voices.length) return null;
-  let best = null, bestScore = -1;
-  for (const v of voices) {
-    const text = (v.labels || []).join(' ') + ' ' + v.name.toLowerCase();
-    let score = 0;
-    for (const l of persona.labels) if (text.includes(l)) score += 1;
-    if (v.category === 'premade') score += 0.2;
-    if (score > bestScore) { bestScore = score; best = v; }
-  }
-  return best ? best.id : voices[0].id;
-}
-X.resolveElevenVoice = resolveElevenVoice;
-
 // =====================================================================
 // Public controls
 // =====================================================================
 X.play = async (loc) => {
   if (!book || !content) return fail('Open a book first.');
   if (!X.providerReady(state.provider)) { state.provider = 'browser'; S.settings.set('ttsProvider', 'browser'); }
-  if (!X.providerReady('browser') && state.provider === 'browser') return fail('This browser has no speech voices. Add an ElevenLabs or OpenAI key in Settings to listen.');
+  if (state.provider === 'browser' && !X.providerReady('browser')) return fail('This browser has no speech voices. Use the on-device voice or add a provider key in Settings.');
   session++;
   const mySession = session;
   stopEngines();
@@ -505,7 +725,6 @@ X.play = async (loc) => {
     state.status = 'loading'; state.loadingMsg = 'Starting…'; emit();
     if (!browser.voices.length) browser.voices = await browser.loadVoices();
     if (mySession !== session) return;
-    // Chrome needs a beat after cancel() before speak()
     setTimeout(() => { if (mySession === session) speakSentence(loc, loc.w || 0, mySession, 0); }, 60);
   } else {
     playUnitFrom(loc, mySession);
@@ -578,7 +797,7 @@ X.setSleep = (opt) => {
 };
 X.sleepRemaining = () => state.sleepAt ? Math.max(0, state.sleepAt - Date.now()) : null;
 
-/** Speak a short sample in the current provider/persona (for Settings). */
+/** Speak a short sample in the current provider with the given persona (for Settings and the voice popover). */
 X.preview = async (personaId) => {
   const persona = C.PERSONAS.find(p => p.id === personaId) || X.persona();
   const sample = 'This is how I read. Chapter one begins on a quiet morning, and the pages turn at your pace.';
@@ -596,12 +815,14 @@ X.preview = async (personaId) => {
   }
   const saved = state.personaId; state.personaId = persona.id;
   try {
-    const { blob } = await synthesize({ text: sample });
+    const def = { text: sample, sentences: T.splitSentences(sample).map((s, i) => ({ s: i, text: s.text, len: s.text.length })) };
+    const { blob } = await synthesize(def);
     const a = new Audio(URL.createObjectURL(blob)); a.playbackRate = state.speed; await a.play();
   } finally { state.personaId = saved; }
 };
 
 X.clearAudioCache = async (bookId) => {
+  kokoro.mem.clear();
   if (bookId) return S.delWhere('audio', 'bookId', bookId);
   return S.clear('audio');
 };

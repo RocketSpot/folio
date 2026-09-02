@@ -10,7 +10,7 @@ Everything is one HTML file plus a manifest and a service worker. There is no ac
 
 - **Import** PDF (text layer, or automatic OCR for image-only pages), EPUB, TXT/HTML, photographed pages, pasted text. Metadata is enriched with covers and subjects from Open Library.
 - **Discover** public-domain books across Open Library, the Internet Archive, Project Gutenberg (through the Archive's mirror) and Google Books, with one-tap import where a full text is available.
-- **Listen** with browser voices (free, offline) or, optionally, ElevenLabs (exact word timestamps) or OpenAI TTS. Six tone-based personas, speed control, sentence skipping, a sleep timer and lock-screen controls.
+- **Listen** five ways: the device's own browser voices; an **on-device open-source voice** ([Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M), Apache-2.0) that runs inside the browser via [kokoro-js](https://www.npmjs.com/package/kokoro-js), free and offline after a one-time ~92 MB download; or your own ElevenLabs (exact word timestamps), OpenAI or Google Cloud Text-to-Speech key. Twelve personas in two groups, *Narrators* and *Readers* (a slow philosophical baritone, a lecture-hall voice, a fireside storyteller, an essayist, a broadcast register, a close-mic bedtime voice), each mapped to a fitting voice on every provider. Speed control, sentence skipping, a sleep timer and lock-screen controls. All voices are original synthetic characters; nothing imitates a real person.
 - **Follow along**: the current word and sentence are highlighted, tapping a word seeks the narration, and pages turn as the voice reaches them.
 - **Read** in a full-screen reader with a two-page spread on wide screens, a 3D page turn you can drag, paged or scrolling layout, four themes and four typefaces.
 - **Paper sync**: photograph a page of your printed copy; Folio matches it against the text, reads the printed page number off the photo, and keeps the paper and digital bookmarks in step. **Paper mode** times sessions with your physical book and takes page check-ins.
@@ -26,7 +26,7 @@ The service worker caches the app and the libraries it has already loaded, so op
 
 ## Optional keys
 
-Settings → Voices accepts an ElevenLabs or OpenAI API key; Settings → Catalog accepts a Google Books key. Keys are stored only in the browser (IndexedDB) and are sent only to the provider you chose when you press play. They are never written to this repository or any server of Folio's.
+Settings → Voices accepts an ElevenLabs, OpenAI or Google Cloud Text-to-Speech API key; Settings → Catalog accepts a Google Books key. Keys are stored only in the browser (IndexedDB) and are sent only to the provider you chose when you press play. They are never written to this repository or any server of Folio's. The on-device voice needs no key at all: the model is fetched from Hugging Face once and cached by the browser.
 
 ## Project layout
 

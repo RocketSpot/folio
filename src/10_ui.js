@@ -170,6 +170,7 @@ UI.init = () => {
   const rerender = U.debounce(() => { if (!F.reader.state.open && (UI.view === 'library' || UI.view === 'insights')) UI.route(); }, 400);
   F.bus.on('books-changed', e => { if (e.action !== 'opened') rerender(); else if (UI.view === 'library') rerender(); });
   F.bus.on('reader-closed', () => rerender());
+  F.bus.on('kokoro-progress', U.throttle(() => { if (UI.view === 'settings' && !F.reader.state.open) renderSettings(); }, 1200));
   UI.route();
 };
 
@@ -621,7 +622,10 @@ async function renderSettings(){
   const audio = await F.tts.audioCacheStats();
   const bVoices = (F.tts.browser.voices || []).slice().sort((a, b) => a.lang.localeCompare(b.lang) || a.name.localeCompare(b.name));
   const eVoices = S.settings.get('elevenVoices', []);
-  const hasEleven = !!S.settings.get('elevenlabsKey'), hasOpenAI = !!S.settings.get('openaiKey');
+  const gVoices = S.settings.get('googleVoices', []);
+  const hasEleven = !!S.settings.get('elevenlabsKey'), hasOpenAI = !!S.settings.get('openaiKey'), hasGoogle = !!S.settings.get('googleTtsKey');
+  const kk = F.tts.kokoroStatus();
+  const kdev = S.settings.get('kokoroDevice', 'auto');
   const OCR_LANGS = [['eng', 'English'], ['deu', 'German'], ['fra', 'French'], ['spa', 'Spanish'], ['ita', 'Italian'], ['por', 'Portuguese'], ['nld', 'Dutch'], ['rus', 'Russian'], ['pol', 'Polish'], ['swe', 'Swedish'], ['lat', 'Latin'], ['jpn', 'Japanese'], ['chi_sim', 'Chinese (simplified)']];
   main.innerHTML = `<div id="settings-root">
     <div class="view-head"><div><div class="eyebrow">Settings</div><h1>Make it yours</h1><p class="lead">Reading defaults, voices, recognition, and your data. API keys are stored only in this browser and sent only to the provider you chose.</p></div></div>
@@ -635,21 +639,33 @@ async function renderSettings(){
       ${row('Follow narration', 'Turn the page when the voice reaches it', sw('autoAdvance', p.autoAdvance))}
     </div>
     <div class="card section"><h2>Voices</h2>
-      <p class="muted small" style="margin:6px 0 10px;line-height:1.5">Browser voices are free and work offline; word highlighting uses the browser's timing where available and a learned estimate elsewhere. ElevenLabs returns exact word timing. OpenAI voices are steered by each persona's direction. Personas are synthetic characters chosen by tone, never imitations of real people.</p>
-      ${row('Default provider', '', `<div class="segmented" data-seg="ttsProvider"><button data-v="browser" class="${ts.provider === 'browser' ? 'on' : ''}">Browser</button><button data-v="elevenlabs" class="${ts.provider === 'elevenlabs' ? 'on' : ''}" ${hasEleven ? '' : 'disabled'}>ElevenLabs</button><button data-v="openai" class="${ts.provider === 'openai' ? 'on' : ''}" ${hasOpenAI ? '' : 'disabled'}>OpenAI</button></div>`)}
-      ${row('ElevenLabs API key', 'Enables studio-quality voices with exact word sync', keyField('elevenlabsKey', 'xi-…'))}
+      <p class="muted small" style="margin:6px 0 10px;line-height:1.5">Five ways to be read to. <b>Browser voices</b> use what the device already has (Edge's "Natural" voices and iOS "Premium" voices are the good ones). <b>On-device</b> runs an open-source voice model inside this browser: free, private, and offline after a one-time download. <b>ElevenLabs</b> gives the most natural voices with exact word timing. <b>OpenAI</b> and <b>Google Cloud</b> are cloud voices billed to your own key (Google includes a free monthly allowance). Every persona is an original synthetic character chosen for how it reads, never an imitation of a real person.</p>
+      ${row('Default provider', '', `<div class="segmented" data-seg="ttsProvider">${Object.keys(F.tts.PROVIDERS).map(id => `<button data-v="${id}" class="${ts.provider === id ? 'on' : ''}" ${F.tts.providerReady(id) ? '' : 'disabled title="Set up below"'}>${esc(F.tts.providerShort(id))}</button>`).join('')}</div>`)}
+      <div class="divider"></div>
+      <h3 style="margin-bottom:6px">On-device voice (Kokoro)</h3>
+      ${row('Voice model', kk.loaded ? `Ready · running on ${kk.device === 'webgpu' ? 'the GPU (fp32, 326 MB)' : 'WebAssembly (q8, 92 MB)'}` : kk.loading ? `Downloading… ${Math.round(kk.progress * 100)}%` : kk.error ? `Could not load: ${esc(kk.error)}` : `Not downloaded yet. About ${(kdev === 'gpu' || (kdev === 'auto' && kk.gpuAvailable)) ? '326 MB (GPU build)' : '92 MB'}, once; kept in the browser cache.`, kk.loaded ? '<span class="chip ok">Ready</span>' : `<button class="btn sm primary" data-a="kokoro-load" ${kk.loading ? 'disabled' : ''}>${I('download')} ${kk.loading ? 'Downloading…' : 'Download voice model'}</button>`)}
+      ${row('Compute', 'GPU is faster and full precision but a larger download; WebAssembly runs anywhere. Reload after changing.', `<div class="segmented" data-seg="kokoroDevice"><button data-v="auto" class="${kdev === 'auto' ? 'on' : ''}">Auto</button><button data-v="gpu" class="${kdev === 'gpu' ? 'on' : ''}" ${kk.gpuAvailable ? '' : 'disabled title="No WebGPU in this browser"'}>GPU</button><button data-v="cpu" class="${kdev === 'cpu' ? 'on' : ''}">WebAssembly</button></div>`)}
+      <div class="muted small" style="margin:10px 0 6px">Voice gallery. Tap one to hear it${kk.loaded ? '' : ' (the first tap downloads the model)'}:</div>
+      <div class="chips" style="margin-bottom:4px">${C.KOKORO_VOICES.map(v => `<button class="chip" data-kvoice="${v.id}" title="${esc(v.desc)} · model-card grade ${v.grade}" style="cursor:pointer;border:1px solid transparent;gap:6px">${I('play')} <b>${esc(v.name)}</b> <span style="font-weight:500;opacity:.8">${esc(v.desc)}</span></button>`).join('')}</div>
+      <div class="divider"></div>
+      <h3 style="margin-bottom:6px">Cloud providers</h3>
+      ${row('ElevenLabs API key', 'The most natural voices, exact word sync; subscription credits', keyField('elevenlabsKey', 'xi-…'))}
       ${hasEleven ? row('ElevenLabs model', '', sel('elevenModel', C.ELEVEN_MODELS, S.settings.get('elevenModel', 'eleven_multilingual_v2'))) : ''}
-      ${hasEleven ? row('Voice list', eVoices.length ? `${eVoices.length} voices loaded` : 'Load the voices available to your account', `<button class="btn sm" data-a="refresh-eleven">${I('refresh')} Refresh voices</button>`) : ''}
-      ${row('OpenAI API key', 'Enables OpenAI speech and vision OCR', keyField('openaiKey', 'sk-…'))}
+      ${hasEleven ? row('ElevenLabs voice list', eVoices.length ? `${eVoices.length} voices loaded` : 'Load the voices available to your account', `<button class="btn sm" data-a="refresh-eleven">${I('refresh')} Refresh voices</button>`) : ''}
+      ${row('OpenAI API key', 'Pay-as-you-go voices steered by each persona; also enables vision OCR', keyField('openaiKey', 'sk-…'))}
       ${hasOpenAI ? row('OpenAI speech model', 'gpt-4o-mini-tts follows persona directions; tts-1 is cheaper', `<input class="input" data-set-text="openaiTtsModel" value="${esc(S.settings.get('openaiTtsModel', 'gpt-4o-mini-tts'))}" style="max-width:200px">`) : ''}
+      ${row('Google Cloud API key', 'Chirp 3 HD and Neural2 voices; 1M characters a month free, then pay-as-you-go. Enable the Text-to-Speech API and restrict the key to this website.', keyField('googleTtsKey', 'AIza…'))}
+      ${hasGoogle ? row('Google voice list', gVoices.length ? `${gVoices.length} English voices loaded` : 'Load the voices available to your project', `<button class="btn sm" data-a="refresh-google">${I('refresh')} Refresh voices</button>`) : ''}
       <div class="divider"></div>
       <h3 style="margin-bottom:6px">Personas</h3>
-      <div class="muted small" style="margin-bottom:8px">Each persona picks a suitable voice automatically. Override per provider if you prefer a specific one.</div>
-      ${C.PERSONAS.map(pe => `<div class="setting-row" style="align-items:flex-start"><div><div class="sl">${esc(pe.name)}</div><div class="sd">${esc(pe.tagline)}</div></div><div class="sc" style="flex-direction:column;align-items:stretch;gap:6px;min-width:220px">
+      <div class="muted small" style="margin-bottom:4px">Each persona picks a fitting voice on every provider by itself. Override any of them here.</div>
+      ${['Narrators', 'Readers'].map(group => `<div class="eyebrow" style="margin:14px 0 2px">${group}</div>` + C.PERSONAS.filter(pe => (pe.group || 'Narrators') === group).map(pe => `<div class="setting-row" style="align-items:flex-start"><div><div class="sl">${esc(pe.name)}</div><div class="sd">${esc(pe.tagline)}</div></div><div class="sc" style="flex-direction:column;align-items:stretch;gap:6px;min-width:230px">
         <select class="select" data-set="browserVoice:${pe.id}"><option value="">Browser: automatic</option>${bVoices.map(v => `<option value="${esc(v.voiceURI)}" ${S.settings.get('browserVoice:' + pe.id) === v.voiceURI ? 'selected' : ''}>${esc(v.name)} (${esc(v.lang)})</option>`).join('')}</select>
+        <select class="select" data-set="kokoroVoice:${pe.id}"><option value="">On-device: ${esc((C.KOKORO_VOICES.find(v => v.id === pe.kokoroVoice) || { name: pe.kokoroVoice }).name)} (default)</option>${C.KOKORO_VOICES.map(v => `<option value="${v.id}" ${S.settings.get('kokoroVoice:' + pe.id) === v.id ? 'selected' : ''}>${esc(v.name)} · ${esc(v.desc)}</option>`).join('')}</select>
         ${hasEleven && eVoices.length ? `<select class="select" data-set="elevenVoice:${pe.id}"><option value="">ElevenLabs: automatic</option>${eVoices.map(v => `<option value="${esc(v.id)}" ${S.settings.get('elevenVoice:' + pe.id) === v.id ? 'selected' : ''}>${esc(v.name)}</option>`).join('')}</select>` : ''}
         ${hasOpenAI ? `<select class="select" data-set="openaiVoice:${pe.id}"><option value="">OpenAI: ${esc(pe.openaiVoice)} (default)</option>${C.OPENAI_VOICES.map(v => `<option value="${v}" ${S.settings.get('openaiVoice:' + pe.id) === v ? 'selected' : ''}>${v}</option>`).join('')}</select>` : ''}
-        <button class="btn xs" data-preview="${pe.id}">${I('play')} Preview</button></div></div>`).join('')}
+        ${hasGoogle && gVoices.length ? `<select class="select" data-set="googleVoice:${pe.id}"><option value="">Google: ${esc(F.tts.resolveGoogleVoice(pe))} (auto)</option>${gVoices.map(v => `<option value="${esc(v.name)}" ${S.settings.get('googleVoice:' + pe.id) === v.name ? 'selected' : ''}>${esc(v.name)} · ${esc(v.family)}${v.gender ? ' · ' + esc(v.gender) : ''}</option>`).join('')}</select>` : ''}
+        <button class="btn xs" data-preview="${pe.id}">${I('play')} Preview with ${esc(F.tts.providerShort(ts.provider))}</button></div></div>`).join('')).join('')}
     </div>
     <div class="card section"><h2>Recognition (OCR)</h2>
       ${row('Engine', 'On-device recognition never leaves this browser', `<div class="segmented" data-seg="ocrEngine"><button data-v="tesseract" class="${S.settings.get('ocrEngine', 'tesseract') === 'tesseract' ? 'on' : ''}">On device</button><button data-v="openai" class="${S.settings.get('ocrEngine') === 'openai' ? 'on' : ''}" ${hasOpenAI ? '' : 'disabled'}>OpenAI vision</button></div>`)}
@@ -682,15 +698,19 @@ async function renderSettings(){
     const step = e.target.closest('[data-step]');
     if (step) { const k = step.dataset.step; const cur = +S.settings.get(k, 19); await S.settings.set(k, U.clamp(cur + (+step.dataset.v) * (+step.dataset.inc), +step.dataset.min, +step.dataset.max)); F.reader.applyPrefs(false); return renderSettings(); }
     const sk = e.target.closest('[data-savekey]');
-    if (sk) { const k = sk.dataset.savekey; const inp = main.querySelector(`[data-key="${k}"]`); const v = inp.value.trim(); if (!v) return UI.toast('Paste a key first.', { type: 'error' }); await S.settings.set(k, v); UI.toast('Key saved on this device.', { type: 'ok' }); if (k === 'elevenlabsKey') { try { await F.tts.fetchElevenVoices(); } catch (err) { UI.toast(err.message, { type: 'error' }); } } return renderSettings(); }
+    if (sk) { const k = sk.dataset.savekey; const inp = main.querySelector(`[data-key="${k}"]`); const v = inp.value.trim(); if (!v) return UI.toast('Paste a key first.', { type: 'error' }); await S.settings.set(k, v); UI.toast('Key saved on this device.', { type: 'ok' }); if (k === 'elevenlabsKey') { try { await F.tts.fetchElevenVoices(); } catch (err) { UI.toast(err.message, { type: 'error' }); } } if (k === 'googleTtsKey') { try { await F.tts.fetchGoogleVoices(); } catch (err) { UI.toast(err.message, { type: 'error', timeout: 8000 }); } } return renderSettings(); }
     const ck = e.target.closest('[data-clearkey]');
-    if (ck) { await S.settings.remove(ck.dataset.clearkey); if (ck.dataset.clearkey === 'elevenlabsKey') await S.settings.remove('elevenVoices'); if (!F.tts.providerReady(F.tts.state.provider)) F.tts.setProvider('browser'); return renderSettings(); }
+    if (ck) { await S.settings.remove(ck.dataset.clearkey); if (ck.dataset.clearkey === 'elevenlabsKey') await S.settings.remove('elevenVoices'); if (ck.dataset.clearkey === 'googleTtsKey') await S.settings.remove('googleVoices'); if (!F.tts.providerReady(F.tts.state.provider)) F.tts.setProvider('browser'); return renderSettings(); }
     const pv = e.target.closest('[data-preview]');
-    if (pv) { try { await F.tts.preview(pv.dataset.preview); } catch (err) { UI.toast(err.message, { type: 'error' }); } return; }
+    if (pv) { try { if (F.tts.state.provider === 'kokoro' && !F.tts.kokoroStatus().loaded) UI.toast('Downloading the on-device voice model first…'); await F.tts.preview(pv.dataset.preview); } catch (err) { UI.toast(err.message, { type: 'error' }); } return; }
+    const kv = e.target.closest('[data-kvoice]');
+    if (kv) { try { if (!F.tts.kokoroStatus().loaded) UI.toast('Downloading the on-device voice model first (once)…', { timeout: 6000 }); await F.tts.kokoroPreviewVoice(kv.dataset.kvoice); } catch (err) { UI.toast(err.message || 'Could not play this voice', { type: 'error' }); } return; }
     const a = e.target.closest('[data-a]');
     if (!a) return;
     const act = a.dataset.a;
-    if (act === 'refresh-eleven') { try { const v = await F.tts.fetchElevenVoices(); UI.toast(`${v.length} ElevenLabs voices loaded.`, { type: 'ok' }); renderSettings(); } catch (err) { UI.toast(err.message, { type: 'error' }); } }
+    if (act === 'kokoro-load') { try { UI.toast('Downloading the on-device voice model…'); await F.tts.loadKokoro(); UI.toast('On-device voice ready.', { type: 'ok' }); } catch (err) { UI.toast('Voice model failed to load: ' + (err.message || err), { type: 'error', timeout: 9000 }); } renderSettings(); }
+    else if (act === 'refresh-google') { try { const v = await F.tts.fetchGoogleVoices(); UI.toast(`${v.length} Google voices loaded.`, { type: 'ok' }); renderSettings(); } catch (err) { UI.toast(err.message, { type: 'error', timeout: 8000 }); } }
+    else if (act === 'refresh-eleven') { try { const v = await F.tts.fetchElevenVoices(); UI.toast(`${v.length} ElevenLabs voices loaded.`, { type: 'ok' }); renderSettings(); } catch (err) { UI.toast(err.message, { type: 'error' }); } }
     else if (act === 'clear-audio') { await F.tts.clearAudioCache(); UI.toast('Narration cache cleared.'); renderSettings(); }
     else if (act === 'export') { const data = await S.exportAll(); U.download(`folio-backup-${U.dayKey()}.json`, new Blob([JSON.stringify(data)], { type: 'application/json' })); }
     else if (act === 'import') { const files = await U.pickFiles('.json,application/json'); if (!files[0]) return; try { const data = JSON.parse(await U.readAsText(files[0])); const counts = await S.importAll(data); UI.toast(`Restored ${counts.books} books, ${counts.sessions} sessions.`, { type: 'ok' }); F.bus.emit('books-changed', {}); F.reader.applyPrefs(false); renderSettings(); } catch (err) { UI.toast(err.message, { type: 'error' }); } }
