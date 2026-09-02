@@ -765,6 +765,7 @@ X.play = async (loc) => {
   if (!book || !content) return fail('Open a book first.');
   if (!X.providerReady(state.provider)) { state.provider = 'browser'; S.settings.set('ttsProvider', 'browser'); }
   if (state.provider === 'browser' && !X.providerReady('browser')) return fail('This browser has no speech voices. Use the on-device voice or add a provider key in Settings.');
+  if (navigator.onLine === false && ['elevenlabs', 'openai', 'google'].includes(state.provider)) return fail(`You are offline and ${X.providerName(state.provider)} needs a connection. Switch to the on-device voice or browser voices for now.`);
   session++;
   const mySession = session;
   stopEngines();

@@ -24,6 +24,10 @@ Everything is one HTML file plus a manifest and a service worker. There is no ac
 
 The service worker caches the app and the libraries it has already loaded, so opening books you have imported works offline. Catalog search and cloud voices need a connection.
 
+## Offline
+
+Books, progress, calibration and settings live in IndexedDB on the device, so they are always available offline. The service worker caches the app shell at install and the PDF/EPUB engines shortly after, and it keeps anything else you have already used (text recognition data, the on-device voice model and any voice you have played, fonts). To make *everything* available before you lose the connection, use **Settings → Offline → Download everything for offline**: it fetches the import engines, the text-recognition engine with English data, the on-device voice model, all thirteen gallery voices and the fonts in one go, and shows what is cached. Catalog search and the cloud voices (ElevenLabs, OpenAI, Google) need a connection; the app says so instead of failing silently. On iPhone and iPad, install Folio to the Home Screen so its storage is kept.
+
 The on-device voice runs in a Web Worker so the reader stays responsive while speech is generated. Speed depends on the hardware: browsers with WebGPU (recent iPads and phones, desktop Chrome and Edge) generate several times faster than real time; the WebAssembly fallback can be slower than real time on older devices, in which case Folio shows "Generating the next passage" between passages while it catches up.
 
 ## Optional keys

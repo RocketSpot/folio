@@ -16,7 +16,7 @@ SRC = os.path.join(ROOT, 'src')
 DOCS = os.path.join(ROOT, 'docs')
 
 JS_ORDER = ['01_util.js', '01b_sample.js', '02_store.js', '03_text.js', '04_ingest.js', '05_catalog.js', '06_tts.js',
-            '08_calibration.js', '07_reader.js', '09_analytics.js', '10_ui.js', '11_app.js']
+            '08_calibration.js', '07_reader.js', '09_analytics.js', '09b_offline.js', '10_ui.js', '11_app.js']
 APP_NAME = 'Folio'
 APP_DESC = 'A personal reading room: import PDFs and EPUBs, listen with synchronized highlighting, keep your place across paper and screen. Everything stays on your device.'
 BG, THEME, INK = '#F4F1EA', '#2F5D50', '#F4F1EA'

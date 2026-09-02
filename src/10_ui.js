@@ -144,7 +144,12 @@ const VIEWS = [{ id: 'library', name: 'Library', icon: 'library' }, { id: 'disco
 UI.view = 'library';
 UI.lastView = 'library';
 function navHTML(){ return VIEWS.map(v => `<a href="#/${v.id}" data-view="${v.id}" class="nav-item ${UI.view === v.id ? 'on' : ''}">${I(v.icon)}<span>${v.name}</span></a>`).join(''); }
-function renderNav(){ document.getElementById('nav-side').innerHTML = navHTML(); document.getElementById('nav-tab').innerHTML = navHTML(); }
+function renderNav(){
+  document.getElementById('nav-side').innerHTML = navHTML();
+  document.getElementById('nav-tab').innerHTML = navHTML();
+  const foot = document.querySelector('.sidenav-foot');
+  if (foot) foot.innerHTML = F.offline && !F.offline.online() ? '<span class="chip warn" style="margin-bottom:6px">Offline</span><br>Your books and the on-device voice keep working. Search and cloud voices will return with the connection.' : 'Everything you import stays on this device. Nothing is uploaded unless you add an API key and press play.';
+}
 UI.navigate = view => { location.hash = '#/' + view; };
 UI.route = async () => {
   const parts = (location.hash || '#/library').replace(/^#\/?/, '').split('/');
@@ -170,7 +175,8 @@ UI.init = () => {
   const rerender = U.debounce(() => { if (!F.reader.state.open && (UI.view === 'library' || UI.view === 'insights')) UI.route(); }, 400);
   F.bus.on('books-changed', e => { if (e.action !== 'opened') rerender(); else if (UI.view === 'library') rerender(); });
   F.bus.on('reader-closed', () => rerender());
-  F.bus.on('kokoro-progress', U.throttle(() => { if (UI.view === 'settings' && !F.reader.state.open) renderSettings(); }, 1200));
+  F.bus.on('kokoro-progress', U.throttle(() => { if (UI.view === 'settings' && !F.reader.state.open && !document.querySelector('.modal-back')) renderSettings(); }, 1200));
+  F.bus.on('net', () => { renderNav(); if (!F.reader.state.open && (UI.view === 'discover' || UI.view === 'library' || UI.view === 'settings')) UI.route(); });
   UI.route();
 };
 
@@ -486,6 +492,7 @@ async function renderDiscover(){
   const SRC = [['openlibrary', 'Open Library'], ['archive', 'Internet Archive'], ['gutenberg', 'Project Gutenberg'], ['google', 'Google Books']];
   main.innerHTML = `
     <div class="view-head"><div><div class="eyebrow">Discover</div><h1>Public-domain shelves</h1><p class="lead">Search Open Library, the Internet Archive, Project Gutenberg and Google Books. Anything marked <b>Full text</b> imports with one tap; other results are for lookup, with a link to the source.</p></div></div>
+    ${F.offline.online() ? '' : '<div class="notice warn" style="margin-bottom:14px"><b>You are offline.</b> Catalog search and imports need a connection; your library and the on-device voice keep working.</div>'}
     <div class="searchbar"><input class="input" id="ds-q" placeholder="Title, author or subject" autocomplete="off" value="${esc(lastQ)}"><button class="btn primary" id="ds-go">${I('discover')} Search</button></div>
     <div class="sources" id="ds-sources">${SRC.map(([id, name]) => `<span class="chip ${enabled[id] ? '' : 'off'}" data-src="${id}">${name}</span>`).join('')}</div>
     <div id="ds-results" class="section" style="margin-top:22px"></div>
@@ -626,6 +633,7 @@ async function renderSettings(){
   const hasEleven = !!S.settings.get('elevenlabsKey'), hasOpenAI = !!S.settings.get('openaiKey'), hasGoogle = !!S.settings.get('googleTtsKey');
   const kk = F.tts.kokoroStatus();
   const kdev = S.settings.get('kokoroDevice', 'auto');
+  const off = { caches: F.offline.cachesOk(), online: F.offline.online() };
   const OCR_LANGS = [['eng', 'English'], ['deu', 'German'], ['fra', 'French'], ['spa', 'Spanish'], ['ita', 'Italian'], ['por', 'Portuguese'], ['nld', 'Dutch'], ['rus', 'Russian'], ['pol', 'Polish'], ['swe', 'Swedish'], ['lat', 'Latin'], ['jpn', 'Japanese'], ['chi_sim', 'Chinese (simplified)']];
   main.innerHTML = `<div id="settings-root">
     <div class="view-head"><div><div class="eyebrow">Settings</div><h1>Make it yours</h1><p class="lead">Reading defaults, voices, recognition, and your data. API keys are stored only in this browser and sent only to the provider you chose.</p></div></div>
@@ -676,6 +684,12 @@ async function renderSettings(){
     <div class="card section"><h2>Catalog</h2>
       ${row('Google Books API key', 'Optional; lifts the anonymous rate limit', keyField('googleBooksKey', 'AIza…'))}
     </div>
+    <div class="card section" id="offline-card"><h2>Offline</h2>
+      <p class="muted small" style="margin:6px 0 10px;line-height:1.5">Your books, progress and settings already live on this device. The offline pack adds everything else the app needs without a connection: the PDF and EPUB engines, text recognition with English data, the on-device voice model and the voice gallery, and the fonts. Catalog search and cloud voices always need a connection.</p>
+      <div id="offline-status" class="muted small">Checking…</div>
+      <div class="row" style="margin-top:12px"><button class="btn primary" data-a="offline-pack" ${off.caches ? '' : 'disabled'}>${I('download')} Download everything for offline</button><button class="btn sm" data-a="offline-recheck">${I('refresh')} Re-check</button></div>
+      ${off.caches ? '' : '<div class="notice warn" style="margin-top:10px">Offline storage is not available in this copy (sandboxed host). Use the installed site instead.</div>'}
+    </div>
     <div class="card section"><h2>Your data</h2>
       ${row('Storage', est ? `${(est.usage / 1e6).toFixed(1)} MB used${est.quota ? ` of about ${Math.round(est.quota / 1e9)} GB available` : ''} · ${S.mode === 'memory' ? '<b>not persisting (private mode?)</b>' : 'IndexedDB on this device'}` : 'IndexedDB on this device', '')}
       ${row('Narration cache', `${audio.count} clips · ${(audio.bytes / 1e6).toFixed(1)} MB · ${U.fmtCompact(audio.chars)} characters synthesized`, `<button class="btn sm" data-a="clear-audio">Clear</button>`)}
@@ -708,6 +722,16 @@ async function renderSettings(){
     const a = e.target.closest('[data-a]');
     if (!a) return;
     const act = a.dataset.a;
+    if (act === 'offline-pack') {
+      const pm = UI.progressModal('Preparing Folio for offline use');
+      try {
+        const r = await F.offline.prepare(p => pm.update({ message: p.label, percent: p.percent }));
+        pm.close();
+        UI.toast(r.warnings.length ? `Offline pack ready with ${r.warnings.length} warning(s): ${r.warnings[0]}` : 'Offline pack ready. Folio now works without a connection on this device.', { type: r.warnings.length ? 'error' : 'ok', timeout: 8000 });
+      } catch (err) { pm.close(); UI.toast(err.message || String(err), { type: 'error', timeout: 8000 }); }
+      renderSettings(); return;
+    }
+    if (act === 'offline-recheck') { renderSettings(); return; }
     if (act === 'kokoro-load') { try { UI.toast('Downloading the on-device voice model…'); await F.tts.loadKokoro(); UI.toast('On-device voice ready.', { type: 'ok' }); } catch (err) { UI.toast('Voice model failed to load: ' + (err.message || err), { type: 'error', timeout: 9000 }); } renderSettings(); }
     else if (act === 'refresh-google') { try { const v = await F.tts.fetchGoogleVoices(); UI.toast(`${v.length} Google voices loaded.`, { type: 'ok' }); renderSettings(); } catch (err) { UI.toast(err.message, { type: 'error', timeout: 8000 }); } }
     else if (act === 'refresh-eleven') { try { const v = await F.tts.fetchElevenVoices(); UI.toast(`${v.length} ElevenLabs voices loaded.`, { type: 'ok' }); renderSettings(); } catch (err) { UI.toast(err.message, { type: 'error' }); } }
@@ -718,6 +742,23 @@ async function renderSettings(){
     else if (act === 'reset-cps') { await S.settings.remove('ttsCps'); UI.toast('Pace estimate reset.'); }
     else if (act === 'wipe') { if (await UI.confirm('Delete everything?', 'All books, reading history, calibration, cached audio and settings on this device will be removed. This cannot be undone.', { okLabel: 'Delete all', danger: true })) { await S.wipe(); location.hash = '#/library'; location.reload(); } }
   });
+  // offline status is async; fill it in after the first paint
+  F.offline.status().then(st => {
+    const el = root.querySelector('#offline-status');
+    if (!el) return;
+    const yes = t => `<span class="chip ok">${esc(t)}</span>`, no = t => `<span class="chip neutral">${esc(t)}</span>`;
+    const rows = [
+      ['Connection', st.online ? yes('Online') : `<span class="chip warn">Offline</span>`],
+      ['App shell (service worker)', st.sw ? yes('Cached') : no(st.caches ? 'Not yet controlling this tab; reload once' : 'Unavailable')],
+      ['Import engines (PDF, EPUB)', st.core.filter(c => c.ok).length === st.core.length ? yes('Cached') : no(`${st.core.filter(c => c.ok).length}/${st.core.length} cached`)],
+      ['Text recognition (OCR)', st.ocr ? yes('Cached') : no('Not yet')],
+      ['On-device voice model', st.kokoroModel ? yes('Cached') : no('Not yet')],
+      ['Voice gallery', st.kokoroVoices >= C.KOKORO_VOICES.length ? yes('All voices cached') : no(`${st.kokoroVoices}/${C.KOKORO_VOICES.length} voices`)],
+      ['Fonts', st.fonts ? yes('Cached') : no('Fallback fonts only')],
+    ];
+    el.innerHTML = `<div class="kv" style="grid-template-columns:auto auto;gap:8px 16px">${rows.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${v}</dd>`).join('')}</div>` +
+      `<div style="margin-top:8px">${st.packedAt ? `Offline pack last prepared ${esc(U.relTime(st.packedAt))}.` : 'Offline pack not prepared yet.'}${st.usage ? ` Storage in use: ${(st.usage / 1e6).toFixed(0)} MB${st.quota ? ` of about ${Math.round(st.quota / 1e9)} GB available` : ''}.` : ''}</div>`;
+  }).catch(() => {});
   root.addEventListener('change', async e => {
     const s = e.target.closest('[data-set]');
     if (s && s.tagName === 'SELECT') { if (s.value === '') await S.settings.remove(s.dataset.set); else await S.settings.set(s.dataset.set, s.value); F.reader.applyPrefs(false); if (['font', 'readMode', 'pageTurn', 'theme'].includes(s.dataset.set)) renderSettings(); return; }

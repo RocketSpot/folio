@@ -1,18 +1,31 @@
-/* Folio service worker — build 4f143ce4 (2026-09-02)
+/* Folio service worker — build e8a73ee8 (2026-09-02)
  * Strategy:
  *   - app shell (this origin): navigations are network-first with cache fallback, other shell files cache-first
  *   - code libraries and fonts from CDNs: stale-while-revalidate in a shared runtime cache
  *   - catalog, download and speech APIs: never cached (network only)
  * Books, progress and settings live in IndexedDB and are never touched by the worker.
  */
-const VERSION = '4f143ce4';
+const VERSION = 'e8a73ee8';
 const SHELL = 'folio-shell-' + VERSION;
 const RUNTIME = 'folio-runtime-v1';
 const SHELL_URLS = ['./', './index.html', './manifest.webmanifest', './icons/icon.svg'];
+// Libraries the import path needs; fetched best-effort at install so importing works offline from the first visit.
+const LIB_URLS = [
+  'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js',
+  'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js',
+  'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js',
+];
 const RUNTIME_HOSTS = ['cdnjs.cloudflare.com', 'cdn.jsdelivr.net', 'tessdata.projectnaptha.com', 'fonts.googleapis.com', 'fonts.gstatic.com', 'unpkg.com'];
+const isHF = host => host === 'huggingface.co' || host.endsWith('.hf.co');
 
 self.addEventListener('install', event => {
-  event.waitUntil(caches.open(SHELL).then(cache => cache.addAll(SHELL_URLS)).catch(err => console.warn('[folio-sw] precache failed', err)));
+  event.waitUntil((async () => {
+    try { const shell = await caches.open(SHELL); await shell.addAll(SHELL_URLS); } catch (err) { console.warn('[folio-sw] shell precache failed', err); }
+    try {
+      const rt = await caches.open(RUNTIME);
+      await Promise.all(LIB_URLS.map(async u => { try { if (!(await rt.match(u))) { const r = await fetch(u, { mode: 'cors' }); if (r && r.ok) await rt.put(u, r); } } catch (e) {} }));
+    } catch (err) {}
+  })());
 });
 
 self.addEventListener('activate', event => {
@@ -47,6 +60,19 @@ self.addEventListener('fetch', event => {
       if (res && res.ok) { const copy = res.clone(); caches.open(SHELL).then(c => c.put(req, copy)).catch(() => {}); }
       return res;
     })));
+    return;
+  }
+
+  // On-device voice data files (small, per voice): cache-first so any voice used or packed once works offline.
+  // Model weights are not cached here; the voice library keeps them in its own cache.
+  if (isHF(url.hostname) && /\/voices\/[^/]+\.bin$/.test(url.pathname)) {
+    event.respondWith(caches.open(RUNTIME).then(async cache => {
+      const hit = await cache.match(req);
+      if (hit) return hit;
+      const res = await fetch(req);
+      if (res && (res.ok || res.type === 'opaque')) cache.put(req, res.clone()).catch(() => {});
+      return res;
+    }));
     return;
   }
 
