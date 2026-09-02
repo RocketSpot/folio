@@ -392,6 +392,11 @@ function resolveElevenVoice(persona){
   if (override) return override;
   const voices = S.settings.get('elevenVoices', []);
   if (!voices.length) return null;
+  // Preferred premade voices by name first (ElevenLabs' default library), then fall back to label matching.
+  for (const hint of persona.elevenHints || []) {
+    const v = voices.find(x => x.name.toLowerCase().startsWith(hint.toLowerCase()));
+    if (v) return v.id;
+  }
   let best = null, bestScore = -1;
   for (const v of voices) {
     const text = (v.labels || []).join(' ') + ' ' + v.name.toLowerCase();

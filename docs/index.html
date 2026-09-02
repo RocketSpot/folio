@@ -423,7 +423,7 @@ const U = F.util = {};
 F.C = {
   APP: 'Folio',
   VERSION: '0.1.0',
-  BUILD: 'b7d2da43',
+  BUILD: '12b04c64',
   SITE: 'site' === 'site',
   CDN: {
     PDFJS: 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js',
@@ -465,52 +465,52 @@ F.C = {
     { id: 'calm-narrator', name: 'Calm Narrator', tagline: 'Even, unhurried, low-key. Built for long sessions and late nights.', rate: 0.95, pitch: 0.95,
       labels: ['calm', 'narrative', 'soft', 'soothing', 'meditative', 'neutral'], browserHints: ['Samantha', 'Ava', 'Allison', 'Google US English', 'Microsoft Aria', 'Karen', 'Moira'],
       openaiVoice: 'sage', instructions: 'You are a calm, unhurried audiobook narrator. Keep an even, gentle pace with soft emphasis and natural pauses at punctuation. Never rush, never dramatize.',
-      kokoroVoice: 'af_heart', kokoroSpeed: 0.95, googleVoice: ['en-US-Chirp3-HD-Aoede', 'en-US-Neural2-F'], piperVoice: 'en_US-hfc_female-medium' },
+      kokoroVoice: 'af_heart', kokoroSpeed: 0.95, googleVoice: ['en-US-Chirp3-HD-Aoede', 'en-US-Neural2-F'], piperVoice: 'en_US-hfc_female-medium', elevenHints: ['River', 'Sarah', 'Eric', 'Matilda'] },
     { id: 'warm-storyteller', name: 'Warm Storyteller', tagline: 'Friendly and expressive, like being read to by someone who loves the book.', rate: 1.0, pitch: 1.05,
       labels: ['warm', 'friendly', 'pleasant', 'expressive', 'storyteller', 'casual', 'conversational'], browserHints: ['Karen', 'Samantha', 'Google UK English Female', 'Microsoft Jenny', 'Tessa', 'Fiona'],
       openaiVoice: 'nova', instructions: 'You are a warm, expressive storyteller reading aloud to a friend. Bring gentle life to dialogue, vary your pacing with the mood of the text, and keep a friendly, intimate tone.',
-      kokoroVoice: 'af_bella', kokoroSpeed: 1.0, googleVoice: ['en-US-Chirp3-HD-Leda', 'en-US-Neural2-C'], piperVoice: 'en_US-amy-medium' },
+      kokoroVoice: 'af_bella', kokoroSpeed: 1.0, googleVoice: ['en-US-Chirp3-HD-Leda', 'en-US-Neural2-C'], piperVoice: 'en_US-amy-medium', elevenHints: ['George', 'Jessica', 'Laura', 'Chris'] },
     { id: 'measured-academic', name: 'Measured Academic', tagline: 'Precise and articulate. Good for non-fiction, essays, and dense passages.', rate: 0.92, pitch: 0.9,
       labels: ['authoritative', 'professional', 'articulate', 'mature', 'formal', 'intellectual', 'middle-aged'], browserHints: ['Daniel', 'Google UK English Male', 'Microsoft Ryan', 'Oliver', 'Arthur', 'Alex'],
       openaiVoice: 'echo', instructions: 'You are a measured, articulate lecturer reading a text aloud. Speak precisely, slightly slower than conversational pace, with clear enunciation and deliberate pauses between clauses.',
-      kokoroVoice: 'bm_george', kokoroSpeed: 0.92, googleVoice: ['en-GB-Chirp3-HD-Charon', 'en-GB-Neural2-B'], piperVoice: 'en_GB-alan-medium' },
+      kokoroVoice: 'bm_george', kokoroSpeed: 0.92, googleVoice: ['en-GB-Chirp3-HD-Charon', 'en-GB-Neural2-B'], piperVoice: 'en_GB-alan-medium', elevenHints: ['Bill', 'Matilda', 'Alice', 'Daniel'] },
     { id: 'bright-brisk', name: 'Bright & Brisk', tagline: 'Lively and quick. For light reading and getting through a lot of pages.', rate: 1.15, pitch: 1.1,
       labels: ['energetic', 'upbeat', 'young', 'bright', 'cheerful', 'confident'], browserHints: ['Zoe', 'Google US English', 'Microsoft Jenny', 'Nicky', 'Samantha'],
       openaiVoice: 'shimmer', instructions: 'You are a bright, energetic reader. Keep a brisk, lively pace with an upbeat tone, crisp consonants, and light emphasis. Stay clear and never breathless.',
-      kokoroVoice: 'am_puck', kokoroSpeed: 1.12, googleVoice: ['en-US-Chirp3-HD-Puck', 'en-US-Neural2-H'], piperVoice: 'en_US-kristin-medium' },
+      kokoroVoice: 'am_puck', kokoroSpeed: 1.12, googleVoice: ['en-US-Chirp3-HD-Puck', 'en-US-Neural2-H'], piperVoice: 'en_US-kristin-medium', elevenHints: ['Laura', 'Liam', 'Jessica', 'Will'] },
     { id: 'late-night-low', name: 'Late-Night Low', tagline: 'Deep, slow and quiet. The bedtime voice.', rate: 0.88, pitch: 0.85,
       labels: ['deep', 'calm', 'raspy', 'husky', 'gravelly', 'relaxed', 'soothing'], browserHints: ['Aaron', 'Daniel', 'Google UK English Male', 'Microsoft Guy', 'Fred', 'Tom', 'Rishi'],
       openaiVoice: 'onyx', instructions: 'You are a deep, quiet late-night narrator. Speak slowly and softly, with a low, relaxed tone and long, unhurried pauses. Intimate and calm, as if reading someone to sleep.',
-      kokoroVoice: 'am_fenrir', kokoroSpeed: 0.88, googleVoice: ['en-US-Chirp3-HD-Fenrir', 'en-US-Neural2-D'], piperVoice: 'en_US-joe-medium' },
+      kokoroVoice: 'am_fenrir', kokoroSpeed: 0.88, googleVoice: ['en-US-Chirp3-HD-Fenrir', 'en-US-Neural2-D'], piperVoice: 'en_US-joe-medium', elevenHints: ['Brian', 'Bill', 'Roger', 'George'] },
     { id: 'crisp-newsreader', name: 'Crisp Newsreader', tagline: 'Neutral, clear and efficient. For articles, reports and reference.', rate: 1.05, pitch: 1.0,
       labels: ['confident', 'crisp', 'professional', 'news', 'neutral', 'clear'], browserHints: ['Alex', 'Microsoft Aria', 'Google US English', 'Tom', 'Samantha', 'Daniel'],
       openaiVoice: 'alloy', instructions: 'You are a clear, neutral newsreader. Speak at an efficient conversational pace with crisp articulation and even emphasis. Informative, not dramatic.',
-      kokoroVoice: 'am_michael', kokoroSpeed: 1.02, googleVoice: ['en-US-Chirp3-HD-Orus', 'en-US-Neural2-J'], piperVoice: 'en_US-ryan-medium' },
+      kokoroVoice: 'am_michael', kokoroSpeed: 1.02, googleVoice: ['en-US-Chirp3-HD-Orus', 'en-US-Neural2-J'], piperVoice: 'en_US-ryan-medium', elevenHints: ['Daniel', 'Eric', 'Sarah', 'Alice'] },
     // Readers: characters built for long-form reading. Original synthetic voices, not imitations of anyone.
     { id: 'the-philosopher', name: 'The Philosopher', tagline: 'A slow, contemplative baritone that lets a sentence land. For essays, dialogues and dense ideas.', rate: 0.86, pitch: 0.85, group: 'Readers',
       labels: ['deep', 'calm', 'mature', 'authoritative', 'british', 'meditative', 'narrative'], browserHints: ['Daniel', 'Google UK English Male', 'Oliver', 'Arthur', 'Microsoft Ryan', 'Alex'],
       openaiVoice: 'onyx', instructions: 'You are a contemplative philosophy lecturer reading aloud late in the evening. Speak slowly in a low, unhurried register, leave real pauses at full stops and before important clauses, and give abstract words weight without theatrics.',
-      kokoroVoice: 'bm_george', kokoroSpeed: 0.88, piperVoice: 'en_GB-northern_english_male-medium', googleVoice: ['en-GB-Chirp3-HD-Charon', 'en-US-Chirp3-HD-Charon', 'en-GB-Neural2-D'] },
+      kokoroVoice: 'bm_george', kokoroSpeed: 0.88, piperVoice: 'en_GB-northern_english_male-medium', elevenHints: ['Bill', 'Brian', 'George', 'Daniel'], googleVoice: ['en-GB-Chirp3-HD-Charon', 'en-US-Chirp3-HD-Charon', 'en-GB-Neural2-D'] },
     { id: 'lecture-hall', name: 'Lecture Hall', tagline: 'Articulate and structured, with the cadence of a good university lecture. For non-fiction and argument.', rate: 0.97, pitch: 0.95, group: 'Readers',
       labels: ['articulate', 'british', 'professional', 'confident', 'intellectual', 'clear'], browserHints: ['Google UK English Male', 'Daniel', 'Microsoft Ryan', 'Arthur', 'Oliver'],
       openaiVoice: 'echo', instructions: 'You are an engaging university lecturer reading a text to a full hall. Structured, articulate and confident; emphasise the logical turns of a sentence, keep a steady pace, and sound genuinely interested in the argument.',
-      kokoroVoice: 'bm_fable', kokoroSpeed: 0.97, piperVoice: 'en_GB-alan-medium', googleVoice: ['en-GB-Chirp3-HD-Fenrir', 'en-GB-Neural2-B', 'en-US-Chirp3-HD-Charon'] },
+      kokoroVoice: 'bm_fable', kokoroSpeed: 0.97, piperVoice: 'en_GB-alan-medium', elevenHints: ['Alice', 'Matilda', 'Daniel', 'Bill'], googleVoice: ['en-GB-Chirp3-HD-Fenrir', 'en-GB-Neural2-B', 'en-US-Chirp3-HD-Charon'] },
     { id: 'fireside', name: 'Fireside', tagline: 'Gravelly, close and unhurried, like a story told across a table. For novels and memoir.', rate: 0.92, pitch: 0.88, group: 'Readers',
       labels: ['raspy', 'gravelly', 'warm', 'deep', 'storyteller', 'relaxed', 'husky'], browserHints: ['Aaron', 'Fred', 'Tom', 'Daniel', 'Google UK English Male', 'Microsoft Guy'],
       openaiVoice: 'ash', instructions: 'You are a seasoned storyteller reading by a fire to a small group. Low, warm and a little gravelly, relaxed pace, intimate rather than performed; let dialogue breathe and never rush a quiet moment.',
-      kokoroVoice: 'am_fenrir', kokoroSpeed: 0.92, piperVoice: 'en_US-joe-medium', googleVoice: ['en-US-Chirp3-HD-Fenrir', 'en-US-Neural2-D', 'en-US-Chirp3-HD-Charon'] },
+      kokoroVoice: 'am_fenrir', kokoroSpeed: 0.92, piperVoice: 'en_US-joe-medium', elevenHints: ['George', 'Roger', 'Callum', 'Brian'], googleVoice: ['en-US-Chirp3-HD-Fenrir', 'en-US-Neural2-D', 'en-US-Chirp3-HD-Charon'] },
     { id: 'the-essayist', name: 'The Essayist', tagline: 'Poised, precise, lightly wry. For essays, criticism and letters.', rate: 0.96, pitch: 1.0, group: 'Readers',
       labels: ['articulate', 'british', 'calm', 'elegant', 'mature', 'pleasant', 'refined'], browserHints: ['Kate', 'Serena', 'Google UK English Female', 'Microsoft Sonia', 'Moira', 'Karen'],
       openaiVoice: 'sage', instructions: 'You are a poised essayist reading her own work. Precise diction, measured pace, a light dry wit in the phrasing; find the rhythm of each sentence and trust the words rather than adding drama.',
-      kokoroVoice: 'bf_emma', kokoroSpeed: 0.95, piperVoice: 'en_GB-jenny_dioco-medium', googleVoice: ['en-GB-Chirp3-HD-Aoede', 'en-GB-Neural2-A', 'en-US-Chirp3-HD-Kore'] },
+      kokoroVoice: 'bf_emma', kokoroSpeed: 0.95, piperVoice: 'en_GB-jenny_dioco-medium', elevenHints: ['Matilda', 'Alice', 'Sarah', 'Lily'], googleVoice: ['en-GB-Chirp3-HD-Aoede', 'en-GB-Neural2-A', 'en-US-Chirp3-HD-Kore'] },
     { id: 'broadcast', name: 'Broadcast', tagline: 'Rounded, resonant, evenly paced. The public-radio register for journalism and history.', rate: 1.0, pitch: 0.92, group: 'Readers',
       labels: ['deep', 'resonant', 'professional', 'news', 'confident', 'warm', 'narrative'], browserHints: ['Alex', 'Tom', 'Microsoft Guy', 'Google US English', 'Daniel'],
       openaiVoice: 'verse', instructions: 'You are a public-radio host reading a long-form piece. Rounded, resonant and evenly paced, with warmth under the authority; clear paragraph transitions and calm, deliberate emphasis.',
-      kokoroVoice: 'am_michael', kokoroSpeed: 0.98, piperVoice: 'en_US-hfc_male-medium', googleVoice: ['en-US-Chirp3-HD-Charon', 'en-US-Neural2-J', 'en-US-Chirp3-HD-Orus'] },
+      kokoroVoice: 'am_michael', kokoroSpeed: 0.98, piperVoice: 'en_US-hfc_male-medium', elevenHints: ['Daniel', 'Brian', 'Eric', 'Bill'], googleVoice: ['en-US-Chirp3-HD-Charon', 'en-US-Neural2-J', 'en-US-Chirp3-HD-Orus'] },
     { id: 'close-mic', name: 'Close Mic', tagline: 'Soft and near, almost a whisper. The bedtime voice for poetry and quiet books.', rate: 0.9, pitch: 0.95, group: 'Readers',
       labels: ['soft', 'whisper', 'calm', 'soothing', 'meditative', 'intimate', 'gentle'], browserHints: ['Samantha', 'Ava', 'Allison', 'Moira', 'Google US English', 'Microsoft Aria'],
       openaiVoice: 'coral', instructions: 'You are reading someone to sleep. Very soft, close to the microphone, slow and gentle, with long pauses; smooth the consonants and keep everything quiet and even.',
-      kokoroVoice: 'af_nicole', kokoroSpeed: 0.9, piperVoice: 'en_US-hfc_female-medium', googleVoice: ['en-US-Chirp3-HD-Leda', 'en-US-Neural2-F', 'en-US-Chirp3-HD-Aoede'] },
+      kokoroVoice: 'af_nicole', kokoroSpeed: 0.9, piperVoice: 'en_US-hfc_female-medium', elevenHints: ['Lily', 'River', 'Sarah', 'Jessica'], googleVoice: ['en-US-Chirp3-HD-Leda', 'en-US-Neural2-F', 'en-US-Chirp3-HD-Aoede'] },
   ],
   // All English on-device (Kokoro) voices with grades from the model card (A best … F). The gallery shows
   // grade C and above by default; the rest are one tap away.
@@ -2748,6 +2748,11 @@ function resolveElevenVoice(persona){
   if (override) return override;
   const voices = S.settings.get('elevenVoices', []);
   if (!voices.length) return null;
+  // Preferred premade voices by name first (ElevenLabs' default library), then fall back to label matching.
+  for (const hint of persona.elevenHints || []) {
+    const v = voices.find(x => x.name.toLowerCase().startsWith(hint.toLowerCase()));
+    if (v) return v.id;
+  }
   let best = null, bestScore = -1;
   for (const v of voices) {
     const text = (v.labels || []).join(' ') + ' ' + v.name.toLowerCase();
