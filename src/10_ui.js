@@ -616,6 +616,43 @@ async function renderInsights(){
   main.querySelectorAll('tr[data-id]').forEach(tr => tr.onclick = () => UI.openBook(tr.dataset.id, { tab: 'label' }));
 }
 
+// ---------- Settings: Piper voice catalog ----------
+UI.piperLang = null;
+async function renderPiperSection(root){
+  const el = root.querySelector('#piper-section');
+  if (!el) return;
+  let catalog;
+  try { catalog = await F.tts.piperCatalog(); } catch (e) { el.innerHTML = `<div class="notice warn">The voice catalog could not be loaded (${esc(e.message)}). It needs a connection the first time.</div>`; return; }
+  if (!root.isConnected) return;
+  const stored = new Set(F.tts.piperStoredCached());
+  const langs = [];
+  for (const v of catalog) if (!langs.find(l => l.family === v.family)) langs.push({ family: v.family, name: v.langName, count: catalog.filter(x => x.family === v.family).length });
+  langs.sort((a, b) => a.name.localeCompare(b.name));
+  const cur = UI.piperLang || F.tts.bookLang(null) || 'en';
+  const lang = langs.find(l => l.family === cur) ? cur : 'en';
+  const voices = catalog.filter(v => v.family === lang);
+  const deflt = S.settings.get('piperVoice:lang:' + lang) || (C.PIPER_LANG_DEFAULTS[lang] || [])[0] || (voices[0] && voices[0].key);
+  const langName = (langs.find(l => l.family === lang) || {}).name || lang;
+  const ps = F.tts.piperStatus();
+  el.innerHTML = `
+    <div class="row between" style="margin-bottom:8px"><div class="row"><label class="muted small" for="piper-lang">Language</label><select class="select" id="piper-lang" data-piper-langsel style="max-width:260px">${langs.map(l => `<option value="${l.family}" ${l.family === lang ? 'selected' : ''}>${esc(l.name)} (${l.count})</option>`).join('')}</select></div><span class="muted small">${stored.size} voice${stored.size === 1 ? '' : 's'} downloaded${ps.loaded ? ' · runtime ready' : ''}</span></div>
+    ${voices.map(v => { const has = stored.has(v.key); const isDef = v.key === deflt; const spk = S.settings.get('piperSpeaker:' + v.key, 0); return `
+    <div class="setting-row" style="align-items:flex-start">
+      <div><div class="sl">${esc(v.name)} <span class="chip neutral">${esc(v.quality.replace('_', ' '))}</span>${v.speakers > 1 ? ` <span class="chip">${v.speakers} speakers</span>` : ''}${isDef ? ' <span class="chip ok">default for ' + esc(langName) + '</span>' : ''}</div>
+        <div class="sd">${esc(v.lang.replace('_', '-'))}${v.country ? ' · ' + esc(v.country) : ''} · ${v.sizeMB} MB${has ? ' · downloaded' : ''} <span data-piper-progress="${esc(v.key)}"></span></div></div>
+      <div class="sc" style="flex-wrap:wrap;justify-content:flex-end">
+        ${v.speakers > 1 ? `<input class="input" type="number" min="0" max="${v.speakers - 1}" value="${spk}" data-piper-speaker="${esc(v.key)}" style="width:84px" title="Speaker number (0–${v.speakers - 1})">` : ''}
+        <button class="btn xs" data-piper-preview="${esc(v.key)}">${I('play')} Preview</button>
+        <button class="btn xs ${isDef ? 'primary' : ''}" data-piper-default="${esc(v.key)}" data-lang="${lang}">${isDef ? 'Default' : 'Use for ' + esc(langName)}</button>
+        ${has ? `<button class="btn xs ghost" data-piper-remove="${esc(v.key)}" title="Remove the downloaded model">${I('trash')}</button>` : `<button class="btn xs" data-piper-download="${esc(v.key)}">${I('download')} Download</button>`}
+      </div></div>`; }).join('')}`;
+}
+F.bus.on('piper-progress', U.throttle(p => {
+  const el = document.querySelector(`[data-piper-progress="${p.voiceId}"]`);
+  if (el) el.textContent = p.total ? `· downloading ${Math.round(p.loaded / p.total * 100)}%` : '· downloading…';
+}, 300));
+F.bus.on('piper-voices', () => { const root = document.getElementById('settings-root'); if (root && !document.querySelector('.modal-back')) renderPiperSection(root); });
+
 // ---------- Settings ----------
 function row(label, desc, control){ return `<div class="setting-row"><div><div class="sl">${label}</div>${desc ? `<div class="sd">${desc}</div>` : ''}</div><div class="sc">${control}</div></div>`; }
 function sw(key, on){ return `<button class="switch ${on ? 'on' : ''}" data-switch="${key}" aria-label="${key}"></button>`; }
@@ -633,6 +670,10 @@ async function renderSettings(){
   const hasEleven = !!S.settings.get('elevenlabsKey'), hasOpenAI = !!S.settings.get('openaiKey'), hasGoogle = !!S.settings.get('googleTtsKey');
   const kk = F.tts.kokoroStatus();
   const kdev = S.settings.get('kokoroDevice', 'auto');
+  const kShowAll = !!S.settings.get('kokoroShowAll', false);
+  const gradeRank = g => ({ 'A': 9, 'A-': 8, 'B+': 7, 'B': 6, 'B-': 5, 'C+': 4, 'C': 3, 'C-': 2, 'D+': 1, 'D': 0, 'D-': -1, 'F+': -2, 'F': -3 })[g] ?? 0;
+  const pCat = F.tts.piperCatalogCached();
+  const pEnglish = pCat ? pCat.filter(v => v.family === 'en') : C.PIPER_LANG_DEFAULTS.en.map(k => ({ key: k, name: k.split('-')[1], lang: k.split('-')[0], quality: k.split('-')[2] }));
   const off = { caches: F.offline.cachesOk(), online: F.offline.online() };
   const OCR_LANGS = [['eng', 'English'], ['deu', 'German'], ['fra', 'French'], ['spa', 'Spanish'], ['ita', 'Italian'], ['por', 'Portuguese'], ['nld', 'Dutch'], ['rus', 'Russian'], ['pol', 'Polish'], ['swe', 'Swedish'], ['lat', 'Latin'], ['jpn', 'Japanese'], ['chi_sim', 'Chinese (simplified)']];
   main.innerHTML = `<div id="settings-root">
@@ -653,8 +694,12 @@ async function renderSettings(){
       <h3 style="margin-bottom:6px">On-device voice (Kokoro)</h3>
       ${row('Voice model', kk.loaded ? `Ready · running on ${kk.device === 'webgpu' ? 'the GPU (fp32, 326 MB)' : 'WebAssembly (q8, 92 MB)'}` : kk.loading ? `Downloading… ${Math.round(kk.progress * 100)}%` : kk.error ? `Could not load: ${esc(kk.error)}` : `Not downloaded yet. About ${(kdev === 'gpu' || (kdev === 'auto' && kk.gpuAvailable)) ? '326 MB (GPU build)' : '92 MB'}, once; kept in the browser cache.`, kk.loaded ? '<span class="chip ok">Ready</span>' : `<button class="btn sm primary" data-a="kokoro-load" ${kk.loading ? 'disabled' : ''}>${I('download')} ${kk.loading ? 'Downloading…' : 'Download voice model'}</button>`)}
       ${row('Compute', 'GPU is faster and full precision but a larger download; WebAssembly runs anywhere. Reload after changing.', `<div class="segmented" data-seg="kokoroDevice"><button data-v="auto" class="${kdev === 'auto' ? 'on' : ''}">Auto</button><button data-v="gpu" class="${kdev === 'gpu' ? 'on' : ''}" ${kk.gpuAvailable ? '' : 'disabled title="No WebGPU in this browser"'}>GPU</button><button data-v="cpu" class="${kdev === 'cpu' ? 'on' : ''}">WebAssembly</button></div>`)}
-      <div class="muted small" style="margin:10px 0 6px">Voice gallery. Tap one to hear it${kk.loaded ? '' : ' (the first tap downloads the model)'}:</div>
-      <div class="chips" style="margin-bottom:4px">${C.KOKORO_VOICES.map(v => `<button class="chip" data-kvoice="${v.id}" title="${esc(v.desc)} · model-card grade ${v.grade}" style="cursor:pointer;border:1px solid transparent;gap:6px">${I('play')} <b>${esc(v.name)}</b> <span style="font-weight:500;opacity:.8">${esc(v.desc)}</span></button>`).join('')}</div>
+      <div class="row between" style="margin:10px 0 6px"><span class="muted small">Voice gallery (English). Tap one to hear it${kk.loaded ? '' : ' (the first tap downloads the model)'}:</span><button class="btn xs ghost" data-a="kokoro-showall">${kShowAll ? 'Show recommended only' : `Show all ${C.KOKORO_VOICES.length} voices`}</button></div>
+      <div class="chips" style="margin-bottom:4px">${C.KOKORO_VOICES.filter(v => kShowAll || gradeRank(v.grade) >= gradeRank('C')).map(v => `<button class="chip" data-kvoice="${v.id}" title="${esc(v.desc)} · model-card grade ${v.grade}" style="cursor:pointer;border:1px solid transparent;gap:6px">${I('play')} <b>${esc(v.name)}</b> <span style="font-weight:500;opacity:.8">${esc(v.desc)} · ${esc(v.accent)} · ${esc(v.grade)}</span></button>`).join('')}</div>
+      <div class="divider"></div>
+      <h3 style="margin-bottom:6px">On-device multilingual voices (Piper)</h3>
+      <p class="muted small" style="margin:4px 0 8px;line-height:1.5">124 open voice models in 38 languages from the Piper project, several with many speakers (the British VCTK model carries 109, the American LibriTTS model 904). Each model is a one-time download of about 20–130 MB and then works offline. Folio picks a voice from the book's language automatically; choose your own default per language here, and pick a speaker number on multi-speaker models.</p>
+      <div id="piper-section" class="muted small">Loading the voice catalog…</div>
       <div class="divider"></div>
       <h3 style="margin-bottom:6px">Cloud providers</h3>
       ${row('ElevenLabs API key', 'The most natural voices, exact word sync; subscription credits', keyField('elevenlabsKey', 'xi-…'))}
@@ -669,7 +714,8 @@ async function renderSettings(){
       <div class="muted small" style="margin-bottom:4px">Each persona picks a fitting voice on every provider by itself. Override any of them here.</div>
       ${['Narrators', 'Readers'].map(group => `<div class="eyebrow" style="margin:14px 0 2px">${group}</div>` + C.PERSONAS.filter(pe => (pe.group || 'Narrators') === group).map(pe => `<div class="setting-row" style="align-items:flex-start"><div><div class="sl">${esc(pe.name)}</div><div class="sd">${esc(pe.tagline)}</div></div><div class="sc" style="flex-direction:column;align-items:stretch;gap:6px;min-width:230px">
         <select class="select" data-set="browserVoice:${pe.id}"><option value="">Browser: automatic</option>${bVoices.map(v => `<option value="${esc(v.voiceURI)}" ${S.settings.get('browserVoice:' + pe.id) === v.voiceURI ? 'selected' : ''}>${esc(v.name)} (${esc(v.lang)})</option>`).join('')}</select>
-        <select class="select" data-set="kokoroVoice:${pe.id}"><option value="">On-device: ${esc((C.KOKORO_VOICES.find(v => v.id === pe.kokoroVoice) || { name: pe.kokoroVoice }).name)} (default)</option>${C.KOKORO_VOICES.map(v => `<option value="${v.id}" ${S.settings.get('kokoroVoice:' + pe.id) === v.id ? 'selected' : ''}>${esc(v.name)} · ${esc(v.desc)}</option>`).join('')}</select>
+        <select class="select" data-set="kokoroVoice:${pe.id}"><option value="">On-device: ${esc((C.KOKORO_VOICES.find(v => v.id === pe.kokoroVoice) || { name: pe.kokoroVoice }).name)} (default)</option>${C.KOKORO_VOICES.map(v => `<option value="${v.id}" ${S.settings.get('kokoroVoice:' + pe.id) === v.id ? 'selected' : ''}>${esc(v.name)} · ${esc(v.desc)} · ${esc(v.grade)}</option>`).join('')}</select>
+        <select class="select" data-set="piperVoice:${pe.id}"><option value="">Piper: ${esc(F.tts.piperVoiceLabel(pe.piperVoice))} (default)</option>${pEnglish.map(v => `<option value="${esc(v.key)}" ${S.settings.get('piperVoice:' + pe.id) === v.key ? 'selected' : ''}>${esc(v.name)} · ${esc(String(v.lang).replace('_', '-'))} · ${esc(v.quality)}${v.speakers > 1 ? ` · ${v.speakers} speakers` : ''}</option>`).join('')}</select>
         ${hasEleven && eVoices.length ? `<select class="select" data-set="elevenVoice:${pe.id}"><option value="">ElevenLabs: automatic</option>${eVoices.map(v => `<option value="${esc(v.id)}" ${S.settings.get('elevenVoice:' + pe.id) === v.id ? 'selected' : ''}>${esc(v.name)}</option>`).join('')}</select>` : ''}
         ${hasOpenAI ? `<select class="select" data-set="openaiVoice:${pe.id}"><option value="">OpenAI: ${esc(pe.openaiVoice)} (default)</option>${C.OPENAI_VOICES.map(v => `<option value="${v}" ${S.settings.get('openaiVoice:' + pe.id) === v ? 'selected' : ''}>${v}</option>`).join('')}</select>` : ''}
         ${hasGoogle && gVoices.length ? `<select class="select" data-set="googleVoice:${pe.id}"><option value="">Google: ${esc(F.tts.resolveGoogleVoice(pe))} (auto)</option>${gVoices.map(v => `<option value="${esc(v.name)}" ${S.settings.get('googleVoice:' + pe.id) === v.name ? 'selected' : ''}>${esc(v.name)} · ${esc(v.family)}${v.gender ? ' · ' + esc(v.gender) : ''}</option>`).join('')}</select>` : ''}
@@ -717,6 +763,14 @@ async function renderSettings(){
     if (ck) { await S.settings.remove(ck.dataset.clearkey); if (ck.dataset.clearkey === 'elevenlabsKey') await S.settings.remove('elevenVoices'); if (ck.dataset.clearkey === 'googleTtsKey') await S.settings.remove('googleVoices'); if (!F.tts.providerReady(F.tts.state.provider)) F.tts.setProvider('browser'); return renderSettings(); }
     const pv = e.target.closest('[data-preview]');
     if (pv) { try { if (F.tts.state.provider === 'kokoro' && !F.tts.kokoroStatus().loaded) UI.toast('Downloading the on-device voice model first…'); await F.tts.preview(pv.dataset.preview); } catch (err) { UI.toast(err.message, { type: 'error' }); } return; }
+    const pp = e.target.closest('[data-piper-preview]');
+    if (pp) { const key = pp.dataset.piperPreview; try { if (!F.tts.piperStoredCached().includes(key)) UI.toast('Downloading this voice first (once)…', { timeout: 6000 }); await F.tts.piperPreview(key, S.settings.get('piperSpeaker:' + key, 0)); } catch (err) { UI.toast(err.message || 'Could not play this voice', { type: 'error', timeout: 8000 }); } return; }
+    const pd = e.target.closest('[data-piper-default]');
+    if (pd) { await S.settings.set('piperVoice:lang:' + pd.dataset.lang, pd.dataset.piperDefault); UI.toast(`Default ${esc(C.LANG_NAMES[pd.dataset.lang] || pd.dataset.lang)} voice set.`, { type: 'ok' }); renderPiperSection(root); return; }
+    const pdl = e.target.closest('[data-piper-download]');
+    if (pdl) { const key = pdl.dataset.piperDownload; pdl.disabled = true; pdl.textContent = 'Downloading…'; try { await F.tts.piperDownload(key); UI.toast('Voice downloaded.', { type: 'ok' }); } catch (err) { UI.toast(err.message || 'Download failed', { type: 'error', timeout: 8000 }); } renderPiperSection(root); return; }
+    const prm = e.target.closest('[data-piper-remove]');
+    if (prm) { if (await UI.confirm('Remove this voice?', 'The downloaded model is deleted from this device. You can download it again any time.', { okLabel: 'Remove', danger: true })) { try { await F.tts.piperRemove(prm.dataset.piperRemove); } catch (err) { UI.toast(err.message, { type: 'error' }); } renderPiperSection(root); } return; }
     const kv = e.target.closest('[data-kvoice]');
     if (kv) { try { if (!F.tts.kokoroStatus().loaded) UI.toast('Downloading the on-device voice model first (once)…', { timeout: 6000 }); await F.tts.kokoroPreviewVoice(kv.dataset.kvoice); } catch (err) { UI.toast(err.message || 'Could not play this voice', { type: 'error' }); } return; }
     const a = e.target.closest('[data-a]');
@@ -732,6 +786,7 @@ async function renderSettings(){
       renderSettings(); return;
     }
     if (act === 'offline-recheck') { renderSettings(); return; }
+    if (act === 'kokoro-showall') { await S.settings.set('kokoroShowAll', !kShowAll); return renderSettings(); }
     if (act === 'kokoro-load') { try { UI.toast('Downloading the on-device voice model…'); await F.tts.loadKokoro(); UI.toast('On-device voice ready.', { type: 'ok' }); } catch (err) { UI.toast('Voice model failed to load: ' + (err.message || err), { type: 'error', timeout: 9000 }); } renderSettings(); }
     else if (act === 'refresh-google') { try { const v = await F.tts.fetchGoogleVoices(); UI.toast(`${v.length} Google voices loaded.`, { type: 'ok' }); renderSettings(); } catch (err) { UI.toast(err.message, { type: 'error', timeout: 8000 }); } }
     else if (act === 'refresh-eleven') { try { const v = await F.tts.fetchElevenVoices(); UI.toast(`${v.length} ElevenLabs voices loaded.`, { type: 'ok' }); renderSettings(); } catch (err) { UI.toast(err.message, { type: 'error' }); } }
@@ -742,6 +797,7 @@ async function renderSettings(){
     else if (act === 'reset-cps') { await S.settings.remove('ttsCps'); UI.toast('Pace estimate reset.'); }
     else if (act === 'wipe') { if (await UI.confirm('Delete everything?', 'All books, reading history, calibration, cached audio and settings on this device will be removed. This cannot be undone.', { okLabel: 'Delete all', danger: true })) { await S.wipe(); location.hash = '#/library'; location.reload(); } }
   });
+  renderPiperSection(root);
   // offline status is async; fill it in after the first paint
   F.offline.status().then(st => {
     const el = root.querySelector('#offline-status');
@@ -754,12 +810,17 @@ async function renderSettings(){
       ['Text recognition (OCR)', st.ocr ? yes('Cached') : no('Not yet')],
       ['On-device voice model', st.kokoroModel ? yes('Cached') : no('Not yet')],
       ['Voice gallery', st.kokoroVoices >= C.KOKORO_VOICES.length ? yes('All voices cached') : no(`${st.kokoroVoices}/${C.KOKORO_VOICES.length} voices`)],
+      ['Multilingual voices (Piper)', st.piperRuntime ? yes(`Runtime cached · ${st.piperVoices} voice${st.piperVoices === 1 ? '' : 's'} downloaded`) : no(st.piperVoices ? `${st.piperVoices} voices downloaded, runtime not yet cached` : 'Not yet')],
       ['Fonts', st.fonts ? yes('Cached') : no('Fallback fonts only')],
     ];
     el.innerHTML = `<div class="kv" style="grid-template-columns:auto auto;gap:8px 16px">${rows.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${v}</dd>`).join('')}</div>` +
       `<div style="margin-top:8px">${st.packedAt ? `Offline pack last prepared ${esc(U.relTime(st.packedAt))}.` : 'Offline pack not prepared yet.'}${st.usage ? ` Storage in use: ${(st.usage / 1e6).toFixed(0)} MB${st.quota ? ` of about ${Math.round(st.quota / 1e9)} GB available` : ''}.` : ''}</div>`;
   }).catch(() => {});
   root.addEventListener('change', async e => {
+    const pl = e.target.closest('[data-piper-langsel]');
+    if (pl) { UI.piperLang = pl.value; renderPiperSection(root); return; }
+    const psk = e.target.closest('[data-piper-speaker]');
+    if (psk) { await S.settings.set('piperSpeaker:' + psk.dataset.piperSpeaker, Math.max(0, +psk.value || 0)); UI.toast(`Speaker ${Math.max(0, +psk.value || 0)} selected.`); return; }
     const s = e.target.closest('[data-set]');
     if (s && s.tagName === 'SELECT') { if (s.value === '') await S.settings.remove(s.dataset.set); else await S.settings.set(s.dataset.set, s.value); F.reader.applyPrefs(false); if (['font', 'readMode', 'pageTurn', 'theme'].includes(s.dataset.set)) renderSettings(); return; }
     const t = e.target.closest('[data-set-text]');

@@ -487,6 +487,7 @@ function togglePopover(kind){ if (!els.popover.hidden && els.popover.dataset.kin
 function showPopover(kind){
   const I = F.ui.icon, esc = U.esc;
   const p = prefs(), ts = F.tts.state;
+  const X_persona = () => F.tts.persona();
   let html = '';
   const top = kind === 'toc' || kind === 'aa' || kind === 'more';
   if (kind === 'toc') {
@@ -507,11 +508,14 @@ function showPopover(kind){
   } else if (kind === 'voice') {
     const provs = Object.keys(F.tts.PROVIDERS);
     const kk = F.tts.kokoroStatus();
-    const kName = pe => (C.KOKORO_VOICES.find(v => v.id === (S.settings.get('kokoroVoice:' + pe.id) || pe.kokoroVoice)) || { name: '' }).name;
+    const kName = pe => ts.provider === 'piper' ? F.tts.piperVoiceLabel(F.tts.resolvePiperVoice(pe)) : (C.KOKORO_VOICES.find(v => v.id === (S.settings.get('kokoroVoice:' + pe.id) || pe.kokoroVoice)) || { name: '' }).name;
+    const bookLang = F.tts.bookLang();
     html = `<h3>Voice</h3>
       <div class="segmented" data-seg="provider" style="margin-bottom:8px">${provs.map(id => `<button data-v="${id}" class="${ts.provider === id ? 'on' : ''}" ${F.tts.providerReady(id) ? '' : 'disabled title="Set up in Settings"'}>${esc(F.tts.providerShort(id))}</button>`).join('')}</div>
       ${ts.provider === 'kokoro' && !kk.loaded ? `<div class="notice" style="margin-bottom:8px">${kk.loading ? `Downloading the on-device voice model… ${Math.round(kk.progress * 100)}%` : 'First play downloads the on-device voice model once (about 92 MB, or 326 MB on the GPU build). After that it works offline.'}</div>` : ''}
-      ${['Narrators', 'Readers'].map(g => `<h3 style="margin-top:12px">${g}</h3>` + C.PERSONAS.filter(pe => (pe.group || 'Narrators') === g).map(pe => `<div class="persona ${pe.id === ts.personaId ? 'on' : ''}" data-act="persona" data-v="${pe.id}"><div><div class="pn">${esc(pe.name)}${ts.provider === 'kokoro' && kName(pe) ? ` <span class="muted" style="font-weight:500">· ${esc(kName(pe))}</span>` : ''}</div><div class="pt">${esc(pe.tagline)}</div></div>${pe.id === ts.personaId ? `<span class="pv">${I('check')}</span>` : ''}</div>`).join('')).join('')}
+      ${ts.provider === 'kokoro' && bookLang !== 'en' ? `<div class="notice warn" style="margin-bottom:8px">This book is in ${esc(C.LANG_NAMES[bookLang] || bookLang)}; Kokoro voices are English-only. Switch to Piper for an on-device ${esc(C.LANG_NAMES[bookLang] || '')} voice.</div>` : ''}
+      ${ts.provider === 'piper' ? `<div class="notice" style="margin-bottom:8px">Reading in ${esc(C.LANG_NAMES[bookLang] || bookLang)} with ${esc(F.tts.piperVoiceLabel(F.tts.resolvePiperVoice(X_persona())))}. ${F.tts.piperStoredCached().includes(F.tts.resolvePiperVoice(X_persona())) ? 'Downloaded.' : 'First play downloads this voice once.'} Change voices per language in Settings.</div>` : ''}
+      ${['Narrators', 'Readers'].map(g => `<h3 style="margin-top:12px">${g}</h3>` + C.PERSONAS.filter(pe => (pe.group || 'Narrators') === g).map(pe => `<div class="persona ${pe.id === ts.personaId ? 'on' : ''}" data-act="persona" data-v="${pe.id}"><div><div class="pn">${esc(pe.name)}${(ts.provider === 'kokoro' || (ts.provider === 'piper' && bookLang === 'en')) && kName(pe) ? ` <span class="muted" style="font-weight:500">· ${esc(kName(pe))}</span>` : ''}</div><div class="pt">${esc(pe.tagline)}</div></div>${pe.id === ts.personaId ? `<span class="pv">${I('check')}</span>` : ''}</div>`).join('')).join('')}
       <div class="setting-row" style="border:none"><div class="sl">Speed <span class="muted" id="rd-speed-v">${ts.speed}×</span></div><div class="sc" style="flex:1"><input type="range" min="0.6" max="2.5" step="0.05" value="${ts.speed}" data-act="speed" style="width:100%;accent-color:var(--accent)"></div></div>
       <div class="row between"><button class="btn sm" data-act="preview">${I('play')} Preview voice</button><a class="btn sm ghost" href="#/settings" data-act="settings">Voice settings</a></div>`;
   } else if (kind === 'sleep') {

@@ -12,6 +12,8 @@ O.CORE = [
   { url: C.CDN.JSZIP, label: 'EPUB unpacker' },
   { url: C.CDN.TESSERACT, label: 'Text recognition library' },
   { url: C.CDN.KOKORO, label: 'On-device voice library' },
+  { url: C.CDN.PIPER, label: 'Multilingual voice library' },
+  { url: C.CDN.ORT_WASM_ESM, label: 'Multilingual voice runtime' },
 ];
 O.voiceUrl = id => `https://huggingface.co/${C.KOKORO_MODEL}/resolve/main/voices/${id}.bin`;
 O.online = () => navigator.onLine !== false;
@@ -42,6 +44,8 @@ O.status = async () => {
   for (const vv of C.KOKORO_VOICES) if (await anyCached(u => u.includes('/voices/' + vv.id + '.bin'))) v++;
   st.kokoroVoices = v;
   st.fonts = await anyCached(u => /fonts\.gstatic\.com/.test(u));
+  st.piperRuntime = await cachedUrl(C.CDN.PIPER) && await cachedUrl(C.CDN.ORT_WASM_ESM);
+  st.piperVoices = F.tts.piperStoredCached().length;
   return st;
 };
 
@@ -88,6 +92,25 @@ O.prepare = async (onProgress = () => {}) => {
   step(3, 'Downloading the voice gallery…');
   let done = 0;
   await Promise.all(C.KOKORO_VOICES.map(v => store(O.voiceUrl(v.id)).catch(e => warnings.push(`Voice ${v.name}: ${e.message}`)).then(() => step(3, `Downloading the voice gallery… ${++done}/${C.KOKORO_VOICES.length}`, done / C.KOKORO_VOICES.length))));
+
+  // multilingual runtime + the default voice for each language on the shelf (each 20–130 MB; skipped if disabled)
+  if (S.settings.get('offlinePiperVoices', true) !== false) {
+    step(3, 'Preparing the multilingual voice runtime…', 0.9);
+    try {
+      await F.tts.loadPiper();
+      const books = await S.all('books');
+      const langs = U.uniq(books.map(b => F.tts.bookLang(b)));
+      const persona = F.tts.persona();
+      let i = 0;
+      for (const lang of langs) {
+        const voiceId = F.tts.resolvePiperVoice(persona, lang);
+        if (F.tts.piperStoredCached().includes(voiceId)) { i++; continue; }
+        const unsub = F.bus.on('piper-progress', p => { if (p.voiceId === voiceId && p.total) step(3, `Downloading ${C.LANG_NAMES[lang] || lang} voice ${voiceId}… ${Math.round(p.loaded / p.total * 100)}%`, 0.9 + 0.1 * (i / Math.max(1, langs.length))); });
+        try { await F.tts.piperDownload(voiceId); } catch (e) { warnings.push(`${C.LANG_NAMES[lang] || lang} voice: ${e.message || e}`); } finally { unsub(); }
+        i++;
+      }
+    } catch (e) { warnings.push('Multilingual voices: ' + (e.message || e)); }
+  }
 
   step(4, 'Checking…');
   await S.settings.set('offlinePackAt', Date.now());

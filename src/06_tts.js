@@ -25,10 +25,23 @@ const emit = () => F.bus.emit('tts', Object.assign({}, state));
 
 const PROVIDERS = {
   browser:    { name: 'Browser voices',   short: 'Browser',   ready: () => browser.available() },
-  kokoro:     { name: 'On-device (Kokoro)', short: 'On-device', ready: () => kokoroSupported() },
+  kokoro:     { name: 'On-device English (Kokoro)', short: 'On-device', ready: () => kokoroSupported() },
+  piper:      { name: 'On-device multilingual (Piper)', short: 'Piper', ready: () => piperSupported() },
   elevenlabs: { name: 'ElevenLabs',       short: 'ElevenLabs', ready: () => !!S.settings.get('elevenlabsKey') },
   openai:     { name: 'OpenAI',           short: 'OpenAI',    ready: () => !!S.settings.get('openaiKey') },
   google:     { name: 'Google Cloud',     short: 'Google',    ready: () => !!S.settings.get('googleTtsKey') },
+};
+const LOCAL_PROVIDERS = ['kokoro', 'piper'];
+
+/** Two-letter language of the open book ('en' when unknown). */
+const LANG_BY_NAME = Object.fromEntries(Object.entries(C.LANG_NAMES).map(([code, name]) => [name.toLowerCase(), code]));
+X.bookLang = (b) => {
+  const raw = String(((b || book) && (b || book).language) || '').trim().toLowerCase();
+  if (!raw) return 'en';
+  if (LANG_BY_NAME[raw]) return LANG_BY_NAME[raw];
+  const m = raw.match(/^[a-z]{2,3}/);
+  if (m && C.LANG_NAMES[m[0].slice(0, 2)]) return m[0].slice(0, 2);
+  return 'en';
 };
 X.PROVIDERS = PROVIDERS;
 X.providerReady = id => !!(PROVIDERS[id] && PROVIDERS[id].ready());
@@ -277,7 +290,7 @@ function unitsOfParagraph(c, p){
   const units = [];
   // On-device generation can be slower than real time on weaker hardware, so keep its units short:
   // the first audio arrives sooner and the next unit is generated while this one plays.
-  const maxChars = state.provider === 'kokoro' ? (kokoro.device === 'webgpu' ? 900 : 320) : MAX_UNIT_CHARS;
+  const maxChars = state.provider === 'kokoro' ? (kokoro.device === 'webgpu' ? 900 : 320) : state.provider === 'piper' ? 700 : MAX_UNIT_CHARS;
   let start = 0;
   while (start < tok.sentences.length) {
     let end = start, chars = 0;
@@ -614,7 +627,201 @@ X.kokoroPreviewVoice = async (voiceId, text) => {
   return a;
 };
 
+// ---------- Piper (on-device, multilingual: 124 voice models in 38 languages, several multi-speaker) ----------
+// The published library imports ONNX Runtime with a bare specifier and hard-codes speaker 0 and pace, so the module
+// text is fetched and patched on the fly (absolute CDN URLs, speaker and pace taken from globals), then imported as a
+// blob module inside a Web Worker. Voice models are stored by the library in the origin's private file system.
+const piper = { engine: null, loading: null, error: null, catalog: null, stored: null, dl: {}, lastEmit: 0 };
+function piperSupported(){ return typeof WebAssembly !== 'undefined' && typeof AudioContext !== 'undefined' && !!(navigator.storage && navigator.storage.getDirectory); }
+X.piperStatus = () => ({ supported: piperSupported(), loaded: !!piper.engine, loading: !!piper.loading && !piper.engine, error: piper.error ? (piper.error.message || String(piper.error)) : null, stored: piper.stored || [], downloading: Object.assign({}, piper.dl), inWorker: !!(piper.engine && piper.engine.worker) });
+
+const PIPER_PATCH_SRC = `
+async function piperPatchedModule(urls){
+  const res = await fetch(urls.dist);
+  if (!res.ok) throw new Error('Could not load the Piper library (' + res.status + ')');
+  let src = await res.text();
+  src = src.split('import("onnxruntime-web/wasm")').join('import("' + urls.ort + '")');
+  src = src.split('import("./').join('import("' + urls.base);
+  src = src.replace(/ONNX_BASE = "[^"]+"/, 'ONNX_BASE = "' + urls.ortBase + '"');
+  src = src.split('const speakerId = 0;').join('const speakerId = (globalThis.__piperSpeakerId || 0);');
+  src = src.split('.inference.length_scale;').join('.inference.length_scale * (globalThis.__piperLengthScale || 1);');
+  src = src.split('numThreads = navigator.hardwareConcurrency;').join("numThreads = (typeof SharedArrayBuffer !== 'undefined') ? navigator.hardwareConcurrency : 1;");
+  const url = URL.createObjectURL(new Blob([src], { type: 'text/javascript' }));
+  return import(url);
+}`;
+const PIPER_WORKER_SRC = PIPER_PATCH_SRC + `
+let mod = null;
+const progress = (voiceId) => (p) => { if (p && typeof p.loaded === 'number') self.postMessage({ type: 'progress', voiceId, loaded: p.loaded, total: p.total || 0, url: p.url || '' }); };
+self.onmessage = async (e) => {
+  const m = e.data;
+  try {
+    if (m.type === 'load') { mod = await piperPatchedModule(m.urls); self.postMessage({ type: 'loaded' }); }
+    else if (m.type === 'stored') { self.postMessage({ type: 'result', id: m.id, stored: await mod.stored() }); }
+    else if (m.type === 'download') { await mod.download(m.voiceId, progress(m.voiceId)); self.postMessage({ type: 'result', id: m.id, downloaded: m.voiceId }); }
+    else if (m.type === 'remove') { await mod.remove(m.voiceId); self.postMessage({ type: 'result', id: m.id, removed: m.voiceId }); }
+    else if (m.type === 'generate') {
+      globalThis.__piperSpeakerId = m.speakerId || 0; globalThis.__piperLengthScale = m.lengthScale || 1;
+      const wav = await mod.predict({ text: m.text, voiceId: m.voiceId }, progress(m.voiceId));
+      const buf = await wav.arrayBuffer();
+      self.postMessage({ type: 'result', id: m.id, buffer: buf }, [buf]);
+    }
+  } catch (err) { self.postMessage({ type: 'error', id: m.id || null, phase: m.type, message: (err && err.message) || String(err) }); }
+};`;
+function piperUrls(){ return { dist: C.CDN.PIPER, base: C.CDN.PIPER_BASE, ort: C.CDN.ORT_WASM_ESM, ortBase: C.CDN.ORT_BASE }; }
+function piperProgress(m){
+  piper.dl[m.voiceId] = { loaded: m.loaded, total: m.total };
+  const now = Date.now();
+  if (now - piper.lastEmit > 250) { piper.lastEmit = now; F.bus.emit('piper-progress', { voiceId: m.voiceId, loaded: m.loaded, total: m.total }); }
+}
+function piperWorkerEngine(){
+  return new Promise((resolve, reject) => {
+    let worker;
+    try { worker = new Worker(URL.createObjectURL(new Blob([PIPER_WORKER_SRC], { type: 'text/javascript' })), { type: 'module' }); } catch (e) { return reject(e); }
+    const pending = new Map();
+    let nextId = 1, settled = false;
+    const call = (msg) => new Promise((res, rej) => { const id = nextId++; pending.set(id, { res, rej }); worker.postMessage(Object.assign({ id }, msg)); });
+    worker.onmessage = e => {
+      const m = e.data;
+      if (m.type === 'progress') return piperProgress(m);
+      if (m.type === 'loaded') { settled = true; return resolve({
+        worker,
+        stored: () => call({ type: 'stored' }).then(r => r.stored),
+        download: (voiceId) => call({ type: 'download', voiceId }),
+        remove: (voiceId) => call({ type: 'remove', voiceId }),
+        generate: (text, voiceId, speakerId, lengthScale) => call({ type: 'generate', text, voiceId, speakerId, lengthScale }).then(r => r.buffer),
+      }); }
+      if (m.type === 'result') { const p = pending.get(m.id); if (p) { pending.delete(m.id); p.res(m); } return; }
+      if (m.type === 'error') { if (!settled) { settled = true; worker.terminate(); return reject(new Error(m.message)); } const p = pending.get(m.id); if (p) { pending.delete(m.id); p.rej(new Error(m.message)); } }
+    };
+    worker.onerror = e => { if (!settled) { settled = true; reject(new Error(e.message || 'Voice worker failed')); } };
+    worker.postMessage({ type: 'load', urls: piperUrls() });
+  });
+}
+async function piperMainEngine(){
+  const mod = await (new Function(PIPER_PATCH_SRC + '\nreturn piperPatchedModule;'))()(piperUrls());
+  return {
+    worker: null,
+    stored: () => mod.stored(),
+    download: (voiceId) => mod.download(voiceId, p => piperProgress({ voiceId, loaded: p.loaded, total: p.total })),
+    remove: (voiceId) => mod.remove(voiceId),
+    async generate(text, voiceId, speakerId, lengthScale){ globalThis.__piperSpeakerId = speakerId || 0; globalThis.__piperLengthScale = lengthScale || 1; const wav = await mod.predict({ text, voiceId }, p => piperProgress({ voiceId, loaded: p.loaded, total: p.total })); return wav.arrayBuffer(); },
+  };
+}
+X.loadPiper = () => {
+  if (piper.engine) return Promise.resolve(piper.engine);
+  if (piper.loading) return piper.loading;
+  piper.error = null;
+  piper.loading = (async () => {
+    let lastErr = null;
+    for (const make of [piperWorkerEngine, piperMainEngine]) {
+      try { piper.engine = await make(); rememberStored(await piper.engine.stored().catch(() => [])); F.bus.emit('piper-voices', {}); return piper.engine; }
+      catch (e) { lastErr = e; console.warn(`[piper] ${make.name} failed`, e && e.message); }
+    }
+    throw lastErr || new Error('The multilingual on-device voice could not be loaded.');
+  })().catch(e => { piper.loading = null; piper.error = e; throw e; });
+  return piper.loading;
+};
+/** Voice catalog (trimmed voices.json), cached for a week. */
+X.piperCatalog = async (force) => {
+  if (piper.catalog && !force) return piper.catalog;
+  const cached = S.settings.get('piperCatalog');
+  if (cached && cached.at && Date.now() - cached.at < 7 * 86400000 && !force) { piper.catalog = cached.list; return piper.catalog; }
+  const j = await U.fetchJSON(C.PIPER_VOICES_URL, {}, 30000);
+  const list = Object.values(j).map(v => ({
+    key: v.key, name: v.name, lang: v.language.code, family: v.language.family, langName: v.language.name_english, country: v.language.country_english,
+    quality: v.quality, speakers: v.num_speakers || 1, sizeMB: Math.round(Object.values(v.files || {}).reduce((a, f) => a + (f.size_bytes || 0), 0) / 1e6),
+  })).sort((a, b) => a.langName.localeCompare(b.langName) || ({ high: 0, medium: 1, low: 2, x_low: 3 })[a.quality] - ({ high: 0, medium: 1, low: 2, x_low: 3 })[b.quality] || a.name.localeCompare(b.name));
+  piper.catalog = list;
+  await S.settings.set('piperCatalog', { at: Date.now(), list });
+  return list;
+};
+function rememberStored(list){ piper.stored = list || []; S.settings.set('piperStoredCache', piper.stored); return piper.stored; }
+X.piperStoredCached = () => piper.stored || S.settings.get('piperStoredCache', []);
+X.piperCatalogCached = () => piper.catalog || ((S.settings.get('piperCatalog') || {}).list) || null;
+X.piperStored = async () => { const engine = await X.loadPiper(); return rememberStored(await engine.stored()); };
+X.piperDownload = async (voiceId) => { const engine = await X.loadPiper(); await engine.download(voiceId); delete piper.dl[voiceId]; rememberStored(await engine.stored().catch(() => piper.stored)); F.bus.emit('piper-voices', { downloaded: voiceId }); return piper.stored; };
+X.piperRemove = async (voiceId) => { const engine = await X.loadPiper(); await engine.remove(voiceId); rememberStored(await engine.stored().catch(() => piper.stored)); F.bus.emit('piper-voices', { removed: voiceId }); return piper.stored; };
+X.piperVoiceLabel = (key) => { const c = X.piperCatalogCached(); const v = c && c.find(x => x.key === key); return v ? `${v.name} (${v.lang.replace('_', '-')}, ${v.quality})` : key; };
+function resolvePiperVoice(persona, lang){
+  lang = lang || X.bookLang();
+  if (lang === 'en') {
+    const o = S.settings.get('piperVoice:' + persona.id);
+    if (o) return o;
+    if (persona.piperVoice) return persona.piperVoice;
+  }
+  const langDefault = S.settings.get('piperVoice:lang:' + lang);
+  if (langDefault) return langDefault;
+  const defs = C.PIPER_LANG_DEFAULTS[lang] || C.PIPER_LANG_DEFAULTS.en;
+  return defs[0];
+}
+X.resolvePiperVoice = resolvePiperVoice;
+X.piperSpeaker = voiceId => +S.settings.get('piperSpeaker:' + voiceId, 0) || 0;
+function wavToFloat(buf){
+  const v = new DataView(buf);
+  let off = 12, sampleRate = 22050, bits = 16, channels = 1, data = null;
+  while (off + 8 <= v.byteLength) {
+    const id = String.fromCharCode(v.getUint8(off), v.getUint8(off + 1), v.getUint8(off + 2), v.getUint8(off + 3));
+    const size = v.getUint32(off + 4, true);
+    if (id === 'fmt ') { channels = v.getUint16(off + 10, true); sampleRate = v.getUint32(off + 12, true); bits = v.getUint16(off + 22, true); }
+    else if (id === 'data') { data = new DataView(buf, off + 8, Math.min(size, v.byteLength - off - 8)); break; }
+    off += 8 + size + (size % 2);
+  }
+  if (!data) return { sampleRate, samples: new Float32Array(0) };
+  const n = Math.floor(data.byteLength / (bits / 8) / channels);
+  const out = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const idx = i * channels * (bits / 8);
+    out[i] = bits === 16 ? data.getInt16(idx, true) / 32768 : bits === 32 ? data.getFloat32(idx, true) : (data.getUint8(idx) - 128) / 128;
+  }
+  return { sampleRate, samples: out };
+}
+async function synthPiper(def, persona){
+  const engine = await X.loadPiper();
+  const lang = X.bookLang();
+  const voiceId = resolvePiperVoice(persona, lang);
+  const catalog = await X.piperCatalog().catch(() => null);
+  const entry = catalog && catalog.find(v => v.key === voiceId);
+  if (!(piper.stored || []).includes(voiceId)) {
+    setLoading(`Downloading voice ${entry ? entry.name : voiceId} (${entry ? entry.sizeMB + ' MB' : 'once'})…`);
+    const unsub = F.bus.on('piper-progress', p => { if (p.voiceId === voiceId && p.total) setLoading(`Downloading voice ${entry ? entry.name : voiceId}… ${Math.round(p.loaded / p.total * 100)}%`); });
+    try { await X.piperDownload(voiceId); } finally { unsub(); }
+  }
+  setLoading('Generating speech on this device…');
+  const speakerId = X.piperSpeaker(voiceId);
+  const lengthScale = 1 / U.clamp(persona.rate || 1, 0.75, 1.3);
+  const sentences = def.sentences || [{ s: 0, text: def.text, len: def.text.length }];
+  const groups = kokoroGroups(sentences);
+  const pieces = []; const segments = [];
+  let sr = 22050, total = 0;
+  for (const g of groups) {
+    const buf = await engine.generate(g.text, voiceId, speakerId, lengthScale);
+    const { sampleRate, samples } = wavToFloat(buf);
+    sr = sampleRate || sr;
+    const gap = Math.round(0.22 * sr);
+    const start = total / sr;
+    pieces.push(samples); total += samples.length;
+    pieces.push(new Float32Array(gap)); total += gap;
+    const end = (total - gap) / sr;
+    const last = segments[segments.length - 1];
+    if (g.partial && last && last.sStart === g.sStart && last.sEnd === g.sEnd) last.end = end;
+    else segments.push({ sStart: g.sStart, sEnd: g.sEnd, start, end });
+  }
+  const all = new Float32Array(total);
+  let off = 0;
+  for (const p of pieces) { all.set(p, off); off += p.length; }
+  return { blob: floatToWav(all, sr), chars: null, segments, duration: total / sr };
+}
+X.piperPreview = async (voiceId, speakerId, text) => {
+  const engine = await X.loadPiper();
+  if (!(piper.stored || []).includes(voiceId)) await X.piperDownload(voiceId);
+  const buf = await engine.generate(text || 'This is how I read. The evening was quiet, and the pages turned at their own pace.', voiceId, speakerId || 0, 1);
+  const a = new Audio(URL.createObjectURL(new Blob([buf], { type: 'audio/wav' })));
+  await a.play();
+  return a;
+};
+
 // ---------- shared unit pipeline ----------
+const localMem = new Map(); // memory-only audio cache for on-device providers
 function voiceKey(){
   const persona = X.persona();
   switch (state.provider) {
@@ -622,6 +829,7 @@ function voiceKey(){
     case 'openai': return `${S.settings.get('openaiVoice:' + persona.id) || persona.openaiVoice}|${S.settings.get('openaiTtsModel', 'gpt-4o-mini-tts')}|${persona.id}`;
     case 'google': return `${resolveGoogleVoice(persona)}|${persona.rate}`;
     case 'kokoro': return `${S.settings.get('kokoroVoice:' + persona.id) || persona.kokoroVoice}|${persona.kokoroSpeed || persona.rate}`;
+    case 'piper': { const v = resolvePiperVoice(persona); return `${v}|${X.piperSpeaker(v)}|${persona.rate}`; }
     default: return persona.id;
   }
 }
@@ -633,15 +841,16 @@ async function synthesize(def){
     case 'openai': return synthOpenAI(def.text, persona);
     case 'google': return synthGoogle(def, persona);
     case 'kokoro': return synthKokoro(def, persona);
+    case 'piper': return synthPiper(def, persona);
     default: throw new Error('Unknown provider');
   }
 }
 async function ensureUnitAudio(def){
   const key = `${book.id}|${state.provider}|${voiceKey()}|${def.c}|${def.p}|${def.sStart}`;
-  const persist = state.provider !== 'kokoro';
+  const persist = !LOCAL_PROVIDERS.includes(state.provider);
   let rec = null;
   if (persist) { try { rec = await S.get('audio', key); } catch (e) {} }
-  else rec = kokoro.mem.get(key) || null;
+  else rec = localMem.get(key) || null;
   const words = unitWords(def);
   if (!rec) {
     if (!def.text.trim()) throw new Error('Nothing to read here.');
@@ -665,7 +874,7 @@ async function ensureUnitAudio(def){
     }
     rec = { key, bookId: book.id, blob, times, duration, createdAt: Date.now(), chars: def.text.length };
     if (persist) { try { await S.put('audio', rec); } catch (e) { console.warn('audio cache write failed', e); } }
-    else { kokoro.mem.set(key, rec); if (kokoro.mem.size > 10) { const k0 = kokoro.mem.keys().next().value; const u0 = urlCache.get(k0); if (u0) { URL.revokeObjectURL(u0); urlCache.delete(k0); } kokoro.mem.delete(k0); } }
+    else { localMem.set(key, rec); if (localMem.size > 10) { const k0 = localMem.keys().next().value; const u0 = urlCache.get(k0); if (u0) { URL.revokeObjectURL(u0); urlCache.delete(k0); } localMem.delete(k0); } }
   }
   let url = urlCache.get(key);
   if (!url) { url = URL.createObjectURL(rec.blob); urlCache.set(key, url); if (urlCache.size > 40) { const [k0, u0] = urlCache.entries().next().value; URL.revokeObjectURL(u0); urlCache.delete(k0); } }
@@ -692,7 +901,7 @@ function prefetch(loc){
   } catch (e) { prefetching = null; }
 }
 async function playUnitFrom(loc, mySession){
-  state.status = 'loading'; state.loadingMsg = state.provider === 'kokoro' ? (kokoro.engine ? 'Generating the next passage on this device…' : 'Preparing the on-device voice…') : 'Generating audio…'; state.error = null;
+  state.status = 'loading'; state.loadingMsg = LOCAL_PROVIDERS.includes(state.provider) ? ((state.provider === 'kokoro' ? kokoro.engine : piper.engine) ? 'Generating the next passage on this device…' : 'Preparing the on-device voice…') : 'Generating audio…'; state.error = null;
   emit();
   const defs = unitsOfParagraph(loc.c, loc.p);
   const def = defs.find(d => loc.s >= d.sStart && loc.s < d.sEnd) || defs[0];
@@ -765,7 +974,8 @@ X.play = async (loc) => {
   if (!book || !content) return fail('Open a book first.');
   if (!X.providerReady(state.provider)) { state.provider = 'browser'; S.settings.set('ttsProvider', 'browser'); }
   if (state.provider === 'browser' && !X.providerReady('browser')) return fail('This browser has no speech voices. Use the on-device voice or add a provider key in Settings.');
-  if (navigator.onLine === false && ['elevenlabs', 'openai', 'google'].includes(state.provider)) return fail(`You are offline and ${X.providerName(state.provider)} needs a connection. Switch to the on-device voice or browser voices for now.`);
+  if (navigator.onLine === false && ['elevenlabs', 'openai', 'google'].includes(state.provider)) return fail(`You are offline and ${X.providerName(state.provider)} needs a connection. Switch to an on-device voice or browser voices for now.`);
+  if (state.provider === 'kokoro' && X.bookLang() !== 'en') return fail(`This book is in ${C.LANG_NAMES[X.bookLang()] || X.bookLang()} and the Kokoro voices are English-only. Switch to Piper (on-device, multilingual) or a browser voice in that language.`);
   session++;
   const mySession = session;
   stopEngines();
@@ -874,7 +1084,7 @@ X.preview = async (personaId) => {
 };
 
 X.clearAudioCache = async (bookId) => {
-  kokoro.mem.clear();
+  localMem.clear();
   if (bookId) return S.delWhere('audio', 'bookId', bookId);
   return S.clear('audio');
 };
