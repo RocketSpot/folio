@@ -24,6 +24,8 @@ Everything is one HTML file plus a manifest and a service worker. There is no ac
 
 The service worker caches the app and the libraries it has already loaded, so opening books you have imported works offline. Catalog search and cloud voices need a connection.
 
+The on-device voice runs in a Web Worker so the reader stays responsive while speech is generated. Speed depends on the hardware: browsers with WebGPU (recent iPads and phones, desktop Chrome and Edge) generate several times faster than real time; the WebAssembly fallback can be slower than real time on older devices, in which case Folio shows "Generating the next passage" between passages while it catches up.
+
 ## Optional keys
 
 Settings → Voices accepts an ElevenLabs, OpenAI or Google Cloud Text-to-Speech API key; Settings → Catalog accepts a Google Books key. Keys are stored only in the browser (IndexedDB) and are sent only to the provider you chose when you press play. They are never written to this repository or any server of Folio's. The on-device voice needs no key at all: the model is fetched from Hugging Face once and cached by the browser.

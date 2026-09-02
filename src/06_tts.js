@@ -692,7 +692,7 @@ function prefetch(loc){
   } catch (e) { prefetching = null; }
 }
 async function playUnitFrom(loc, mySession){
-  state.status = 'loading'; state.loadingMsg = state.provider === 'kokoro' ? 'Preparing on-device voice…' : 'Generating audio…'; state.error = null;
+  state.status = 'loading'; state.loadingMsg = state.provider === 'kokoro' ? (kokoro.engine ? 'Generating the next passage on this device…' : 'Preparing the on-device voice…') : 'Generating audio…'; state.error = null;
   emit();
   const defs = unitsOfParagraph(loc.c, loc.p);
   const def = defs.find(d => loc.s >= d.sStart && loc.s < d.sEnd) || defs[0];
