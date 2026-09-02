@@ -56,13 +56,26 @@ O.prepare = async (onProgress = () => {}) => {
   const warnings = [];
   const N = 5;
   const step = (i, label, sub) => onProgress({ label, percent: (i + (sub || 0)) / N });
+  // Write straight into the runtime cache the service worker reads from, so the pack works even before a new
+  // worker version has taken control of this tab.
+  const rt = await caches.open('folio-runtime-v1');
+  const store = async (url) => {
+    if (await rt.match(url)) return true;
+    let res = null;
+    try { res = await fetch(url, { mode: 'cors' }); } catch (e) {}
+    if (!res || !(res.ok || res.type === 'opaque')) { try { res = await fetch(url, { mode: 'no-cors' }); } catch (e) { res = null; } }
+    if (!res) throw new Error('could not fetch ' + url.split('/').pop());
+    await rt.put(url, res);
+    return true;
+  };
 
   step(0, 'Downloading the reading and import libraries…');
-  await Promise.all(O.CORE.map(item => fetch(item.url, { mode: 'cors' }).then(r => { if (!r.ok) warnings.push(item.label + ' returned ' + r.status); }).catch(e => warnings.push(item.label + ': ' + e.message))));
+  await Promise.all(O.CORE.map(item => store(item.url).catch(e => warnings.push(item.label + ': ' + e.message))));
   try {
-    const css = await (await fetch(FONT_CSS, { mode: 'cors' })).text();
+    // a variant URL avoids the opaque stylesheet the page itself cached; the font files are what matter offline
+    const css = await (await fetch(FONT_CSS + '&folio=pack', { mode: 'cors' })).text();
     const urls = U.uniq(Array.from(css.matchAll(/url\((https:[^)]+)\)/g)).map(m => m[1]));
-    await Promise.all(urls.slice(0, 48).map(u => fetch(u, { mode: 'cors' }).catch(() => null)));
+    await Promise.all(urls.slice(0, 48).map(u => store(u).catch(() => null)));
   } catch (e) { warnings.push('Fonts: ' + e.message); }
 
   step(1, 'Downloading the text-recognition engine and English data…');
@@ -74,7 +87,7 @@ O.prepare = async (onProgress = () => {}) => {
 
   step(3, 'Downloading the voice gallery…');
   let done = 0;
-  await Promise.all(C.KOKORO_VOICES.map(v => fetch(O.voiceUrl(v.id), { mode: 'cors' }).catch(() => null).then(() => step(3, `Downloading the voice gallery… ${++done}/${C.KOKORO_VOICES.length}`, done / C.KOKORO_VOICES.length))));
+  await Promise.all(C.KOKORO_VOICES.map(v => store(O.voiceUrl(v.id)).catch(e => warnings.push(`Voice ${v.name}: ${e.message}`)).then(() => step(3, `Downloading the voice gallery… ${++done}/${C.KOKORO_VOICES.length}`, done / C.KOKORO_VOICES.length))));
 
   step(4, 'Checking…');
   await S.settings.set('offlinePackAt', Date.now());
