@@ -14,6 +14,7 @@ const LIB_URLS = [
   'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js',
   'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js',
   'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js',
+  'https://cdn.jsdelivr.net/gh/johnfactotum/foliate-js@78914aef4466eb960965702401634c2cb348e9b1/mobi.js',
 ];
 const RUNTIME_HOSTS = ['cdnjs.cloudflare.com', 'cdn.jsdelivr.net', 'tessdata.projectnaptha.com', 'fonts.googleapis.com', 'fonts.gstatic.com', 'unpkg.com'];
 const isHF = host => host === 'huggingface.co' || host.endsWith('.hf.co');

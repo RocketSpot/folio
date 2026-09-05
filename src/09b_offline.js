@@ -9,7 +9,8 @@ const FONT_CSS = 'https://fonts.googleapis.com/css2?family=Inter:wght@400;500;60
 O.CORE = [
   { url: C.CDN.PDFJS, label: 'PDF engine' },
   { url: C.CDN.PDFJS_WORKER, label: 'PDF engine worker' },
-  { url: C.CDN.JSZIP, label: 'EPUB unpacker' },
+  { url: C.CDN.JSZIP, label: 'EPUB / Word / comic unpacker' },
+  { url: C.CDN.MOBI, label: 'Kindle (MOBI / AZW3) parser' },
   { url: C.CDN.TESSERACT, label: 'Text recognition library' },
   { url: C.CDN.KOKORO, label: 'On-device voice library' },
   { url: C.CDN.PIPER, label: 'Multilingual voice library' },

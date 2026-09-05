@@ -361,6 +361,7 @@ body.reading .toasts { bottom: calc(160px + env(safe-area-inset-bottom)); }
 .size-ctl button.small-a { font-size: 13px; } .size-ctl button.big-a { font-size: 19px; }
 .size-ctl span { min-width: 40px; text-align: center; font-variant-numeric: tabular-nums; font-weight: 600; font-size: 13px; }
 @media (prefers-reduced-motion: reduce) { .rd-sheet.animate, .rd-flow.sliding { transition-duration: .01ms !important; } .face-shade.pulse, .rd-under-shade.pulse { animation-duration: .01ms !important; } }
+body.dragging::after { content: 'Drop to add to your library'; position: fixed; inset: 10px; z-index: 400; border: 2px dashed var(--accent); border-radius: 18px; background: color-mix(in srgb, var(--paper) 88%, transparent); display: flex; align-items: center; justify-content: center; font-family: var(--serif); font-size: clamp(22px, 4vw, 34px); font-weight: 600; color: var(--accent); pointer-events: none; }
 </style>
 </head>
 <body>

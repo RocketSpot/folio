@@ -20,6 +20,8 @@ F.C = {
     PIPER: 'https://cdn.jsdelivr.net/npm/@mintplex-labs/piper-tts-web@1.0.5/dist/piper-tts-web.js',
     PIPER_BASE: 'https://cdn.jsdelivr.net/npm/@mintplex-labs/piper-tts-web@1.0.5/dist/',
     ORT_WASM_ESM: 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/ort.wasm.min.mjs',
+    // foliate-js MOBI/KF8 parser (MIT), pinned to a commit; a self-contained ES module
+    MOBI: 'https://cdn.jsdelivr.net/gh/johnfactotum/foliate-js@78914aef4466eb960965702401634c2cb348e9b1/mobi.js',
     ORT_BASE: 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/',
   },
   KOKORO_MODEL: 'onnx-community/Kokoro-82M-v1.0-ONNX',

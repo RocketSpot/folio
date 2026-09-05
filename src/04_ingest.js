@@ -107,7 +107,7 @@ I.fromText = async (text, hints = {}, opts = {}) => {
   return makeBook({
     title: parsed.title || hints.title, author: parsed.author || hints.author, language: parsed.language || hints.language,
     subjects: hints.subjects, description: hints.description, cover: hints.cover,
-  }, { chapters: parsed.chapters }, { source: hints.source || 'upload', sourceRef: hints.sourceRef, format: 'txt', fileName: hints.fileName, fileSize: hints.fileSize, ids: hints.ids });
+  }, { chapters: parsed.chapters }, { source: hints.source || 'upload', sourceRef: hints.sourceRef, format: hints.format || 'txt', fileName: hints.fileName, fileSize: hints.fileSize, ids: hints.ids });
 };
 
 // ---------- HTML ----------

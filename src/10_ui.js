@@ -177,6 +177,7 @@ UI.init = () => {
   F.bus.on('reader-closed', () => rerender());
   F.bus.on('kokoro-progress', U.throttle(() => { if (UI.view === 'settings' && !F.reader.state.open && !document.querySelector('.modal-back')) renderSettings(); }, 1200));
   F.bus.on('net', () => { renderNav(); if (!F.reader.state.open && (UI.view === 'discover' || UI.view === 'library' || UI.view === 'settings')) UI.route(); });
+  installDropZone();
   UI.route();
 };
 
@@ -189,7 +190,7 @@ async function renderLibrary(){
   main.innerHTML = `
     <div class="view-head">
       <div><div class="eyebrow">Your library</div><h1>${greeting()}</h1>
-      <p class="lead">${books.length ? `${U.plural(books.length, 'book')} on the shelf, ${U.fmtCompact(totalWords)} words in all. ${S.mode === 'memory' ? 'Storage is unavailable on this host; see the note below.' : 'Everything stays on this device.'}` : 'Add a PDF, an EPUB, a photographed page, or find a public-domain classic.'}</p></div>
+      <p class="lead">${books.length ? `${U.plural(books.length, 'book')} on the shelf, ${U.fmtCompact(totalWords)} words in all. ${S.mode === 'memory' ? 'Storage is unavailable on this host; see the note below.' : 'Everything stays on this device.'}` : 'Add a PDF, EPUB, Kindle or Word file, a photographed page, or find a public-domain classic. Almost any book file works; drop it anywhere on this page.'}</p></div>
       <div class="row"><button class="btn primary" id="lib-add">${I('plus')} Add a book</button></div>
     </div>
     ${S.mode === 'memory' ? `<div class="notice warn" style="margin-bottom:18px"><b>This copy cannot save anything on this device.</b> ${U.sandboxed ? 'The host serves this page inside a security sandbox that blocks browser storage (IndexedDB, localStorage).' : 'The browser is refusing storage (private mode or a strict privacy setting).'} Everything works for this session, but the library resets when the tab closes. To keep your books, run Folio from a host that allows storage, or use <a href="#/settings">Settings → Your data → Export</a> before you leave.</div>` : ''}
@@ -227,14 +228,14 @@ async function continueCard(b, p){
 // ---------- Add menu & import ----------
 UI.addMenu = () => {
   const m = UI.modal({ title: 'Add a book', body: `<div class="menu">
-    <button data-a="upload">${I('upload')}<span>Upload a file<span class="md">PDF, EPUB, TXT or HTML. Scanned PDFs are recognized automatically.</span></span></button>
+    <button data-a="upload">${I('upload')}<span>Upload a file<span class="md">PDF, EPUB, Kindle (MOBI, AZW3), Word, FB2, RTF, ODT, PalmDoc, comics, Markdown, HTML, LaTeX, subtitles, text, or a zip of any of these. Scanned PDFs are recognized automatically.</span></span></button>
     <button data-a="photo">${I('camera')}<span>Photograph pages<span class="md">Point the camera at a page of a paper book; the text is recognized on this device.</span></span></button>
     <button data-a="discover">${I('discover')}<span>Find a public-domain book<span class="md">Open Library, Internet Archive, Project Gutenberg, Google Books.</span></span></button>
     <button data-a="paste">${I('text')}<span>Paste text<span class="md">Turn any text into a readable, listenable book.</span></span></button></div>` });
   m.body.onclick = async e => {
     const b = e.target.closest('[data-a]'); if (!b) return;
     const a = b.dataset.a; m.close();
-    if (a === 'upload') { const files = await U.pickFiles('.pdf,.epub,.txt,.html,.htm,.xhtml,.md,application/pdf,application/epub+zip,text/plain,text/html', true); if (files.length) UI.importFiles(files); }
+    if (a === 'upload') { const files = await U.pickFiles(F.ingest.acceptString(), true); if (files.length) UI.importFiles(files); }
     else if (a === 'photo') UI.photographPages();
     else if (a === 'discover') UI.navigate('discover');
     else if (a === 'paste') {
@@ -244,18 +245,46 @@ UI.addMenu = () => {
   };
 };
 UI.importFiles = async (files) => {
+  files = Array.from(files || []);
+  // several photos dropped together are one scanned book, not one book per photo
+  const photos = files.filter(f => F.ingest.detectType(f) === 'image');
+  if (photos.length > 1) {
+    files = files.filter(f => !photos.includes(f));
+    const pm = UI.progressModal(`Recognizing ${photos.length} photos`);
+    try { const res = await F.ingest.fromImages(photos, { onProgress: p => pm.update(p) }); await F.ingest.save(res); pm.close(); UI.toast(`Added “${res.book.title}”`, { type: 'ok', action: 'Open', onAction: () => UI.openBook(res.book.id) }); }
+    catch (e) { pm.close(); console.error(e); UI.toast(e.message || 'Recognition failed', { type: 'error', timeout: 8000 }); }
+  }
   for (const f of files) {
     const pm = UI.progressModal(`Importing ${f.name}`);
     try {
       const res = await F.ingest.fromFile(f, { onProgress: p => pm.update(p) });
+      const list = Array.isArray(res) ? res : [res];
       pm.update({ message: 'Saving…', percent: 0.98 });
-      await F.ingest.save(res);
+      for (const one of list) {
+        await F.ingest.save(one);
+        UI.toast(`Added “${one.book.title}” · ${U.fmtCompact(one.book.words)} words`, { type: 'ok', action: 'Open', onAction: () => UI.openBook(one.book.id) });
+        F.catalog.enrichBook(one.book.id).catch(() => {});
+      }
       pm.close();
-      UI.toast(`Added “${res.book.title}” · ${U.fmtCompact(res.book.words)} words`, { type: 'ok', action: 'Open', onAction: () => UI.openBook(res.book.id) });
-      F.catalog.enrichBook(res.book.id).catch(() => {});
-    } catch (e) { pm.close(); console.error(e); UI.toast(e.message || 'Import failed', { type: 'error', timeout: 8000 }); }
+    } catch (e) { pm.close(); console.error(e); UI.toast(e.message || 'Import failed', { type: 'error', timeout: 9000 }); }
   }
 };
+// Drag a file (or several) anywhere onto the library to import it.
+function installDropZone(){
+  let depth = 0;
+  const hasFiles = e => e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files');
+  window.addEventListener('dragenter', e => { if (!hasFiles(e)) return; e.preventDefault(); depth++; document.body.classList.add('dragging'); });
+  window.addEventListener('dragover', e => { if (!hasFiles(e)) return; e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; });
+  window.addEventListener('dragleave', e => { if (!hasFiles(e)) return; depth = Math.max(0, depth - 1); if (!depth) document.body.classList.remove('dragging'); });
+  window.addEventListener('drop', e => {
+    if (!hasFiles(e)) return;
+    e.preventDefault(); depth = 0; document.body.classList.remove('dragging');
+    const files = Array.from(e.dataTransfer.files || []);
+    if (!files.length) return;
+    if (F.reader.state.open) F.reader.close && F.reader.close();
+    UI.importFiles(files);
+  });
+}
 UI.importText = async (text, hints) => {
   const pm = UI.progressModal('Importing text');
   try { const res = await F.ingest.fromText(text, hints, { onProgress: p => pm.update(p) }); await F.ingest.save(res); pm.close(); UI.toast(`Added “${res.book.title}”`, { type: 'ok', action: 'Open', onAction: () => UI.openBook(res.book.id) }); }
@@ -733,7 +762,7 @@ async function renderSettings(){
       ${row('Google Books API key', 'Optional; lifts the anonymous rate limit', keyField('googleBooksKey', 'AIza…'))}
     </div>
     <div class="card section" id="offline-card"><h2>Offline</h2>
-      <p class="muted small" style="margin:6px 0 10px;line-height:1.5">Your books, progress and settings already live on this device. The offline pack adds everything else the app needs without a connection: the PDF and EPUB engines, text recognition with English data, the on-device voice model and the voice gallery, and the fonts. Catalog search and cloud voices always need a connection.</p>
+      <p class="muted small" style="margin:6px 0 10px;line-height:1.5">Your books, progress and settings already live on this device. The offline pack adds everything else the app needs without a connection: the PDF, EPUB and Kindle import engines, text recognition with English data, the on-device voice model and the voice gallery, and the fonts. Catalog search and cloud voices always need a connection.</p>
       <div id="offline-status" class="muted small">Checking…</div>
       <div class="row" style="margin-top:12px"><button class="btn primary" data-a="offline-pack" ${off.caches ? '' : 'disabled'}>${I('download')} Download everything for offline</button><button class="btn sm" data-a="offline-recheck">${I('refresh')} Re-check</button></div>
       ${off.caches ? '' : '<div class="notice warn" style="margin-top:10px">Offline storage is not available in this copy (sandboxed host). Use the installed site instead.</div>'}
@@ -747,7 +776,7 @@ async function renderSettings(){
       ${row('Delete everything', 'Removes all books, history and settings from this device', `<button class="btn sm danger" data-a="wipe">${I('trash')} Delete all</button>`)}
     </div>
     <div class="card section"><h2>About Folio</h2>
-      <p class="muted small" style="margin-top:8px;line-height:1.55">Version ${C.VERSION} · build ${esc(C.BUILD)}${C.SITE ? ' · installed-site build' : ' · single-file build'}${U.isStandalone() ? ' · running as an installed app' : ''}. Folio is a single-file reading room: PDF and EPUB parsing, text recognition, narration, page mapping and statistics all run inside this browser tab. There is no account and no server of its own. The only network calls are to the public catalogs you search (Open Library, Internet Archive, Gutendex, Google Books), to fonts and the code libraries it loads (pdf.js, JSZip, Tesseract.js), and to a speech provider if you add a key.<br><br>On iPhone or iPad, open this page in Safari and choose <b>Share → Add to Home Screen</b> for a full-screen app. On Android, use <b>Install app</b> from the browser menu.</p>
+      <p class="muted small" style="margin-top:8px;line-height:1.55">Version ${C.VERSION} · build ${esc(C.BUILD)}${C.SITE ? ' · installed-site build' : ' · single-file build'}${U.isStandalone() ? ' · running as an installed app' : ''}. Folio is a single-file reading room: parsing of PDF, EPUB, Kindle, Word, FictionBook, RTF, OpenDocument, PalmDoc, comic, Markdown, LaTeX, subtitle, HTML and text files, text recognition, narration, page mapping and statistics all run inside this browser tab. There is no account and no server of its own. The only network calls are to the public catalogs you search (Open Library, Internet Archive, Gutendex, Google Books), to fonts and the code libraries it loads (pdf.js, JSZip, Tesseract.js), and to a speech provider if you add a key.<br><br>On iPhone or iPad, open this page in Safari and choose <b>Share → Add to Home Screen</b> for a full-screen app. On Android, use <b>Install app</b> from the browser menu.</p>
     </div></div>`;
   const root = main.querySelector('#settings-root');
   root.addEventListener('click', async e => {
@@ -815,7 +844,7 @@ async function renderSettings(){
     const rows = [
       ['Connection', st.online ? yes('Online') : `<span class="chip warn">Offline</span>`],
       ['App shell (service worker)', st.sw ? yes('Cached') : no(st.caches ? 'Not yet controlling this tab; reload once' : 'Unavailable')],
-      ['Import engines (PDF, EPUB)', st.core.filter(c => c.ok).length === st.core.length ? yes('Cached') : no(`${st.core.filter(c => c.ok).length}/${st.core.length} cached`)],
+      ['Import engines (PDF, EPUB, Kindle)', st.core.filter(c => c.ok).length === st.core.length ? yes('Cached') : no(`${st.core.filter(c => c.ok).length}/${st.core.length} cached`)],
       ['Text recognition (OCR)', st.ocr ? yes('Cached') : no('Not yet')],
       ['On-device voice model', st.kokoroModel ? yes('Cached') : no('Not yet')],
       ['Voice gallery', st.kokoroVoices >= C.KOKORO_VOICES.length ? yes('All voices cached') : no(`${st.kokoroVoices}/${C.KOKORO_VOICES.length} voices`)],
